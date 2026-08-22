@@ -1,0 +1,4 @@
+[
+  {"provider":"codex", "source":"codex-cli", "usage":{"accountEmail":"utku@example.com", "loginMethod":"plus", "primary":{"usedPercent":42,"resetDescription":"2h 14m"}, "secondary":{"usedPercent":18,"resetDescription":"4d 6h"}}, "credits":{"remaining":0}},
+  {"provider":"claude", "source":"claude-cli", "usage":{"accountEmail":"utku@example.com", "loginMethod":"pro", "primary":{"usedPercent":67,"resetDescription":"48m"}, "secondary":{"usedPercent":31,"resetDescription":"3d 2h"}}}
+]
