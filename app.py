@@ -5,18 +5,21 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import QSettings, QSharedMemory, QStandardPaths, Qt, QTimer
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
-    QMenu, QPushButton, QScrollArea, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
+    QMenu, QPushButton, QScrollArea, QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout, QWidget,
 )
 
 
 DEFAULT_CLI = "/home/utkucan/.local/bin/codexbar-0540"
+APP_INSTANCE_NAME = "codexbar-linux-single-instance-v1"
+LOGO_PATH = Path(__file__).parent / "assets" / "codexbar-linux-logo.png"
+MONTH_NAMES = ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
 
 
 def cli_path() -> str:
@@ -102,7 +105,7 @@ def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
             "windows": windows,
             "credits": credits.get("remaining"),
             "credit_unit": credits.get("unit") or "credits",
-            "pace": pace_window.get("summary") or "Usage pace will appear when enough data is available.",
+            "pace": pace_window.get("summary") or "Yeterli veri oluştuğunda kullanım temposu burada görünecek.",
         })
     return providers, None if providers else "Kullanılabilir provider verisi bulunamadı."
 
@@ -114,10 +117,19 @@ def clamp_percent(value: object) -> float:
         return 0.0
 
 
-def compact_number(value: object) -> str:
+def numeric_value(value: object) -> float | None:
+    """Parse CLI numbers even when a provider adds separators or a currency sign."""
+    if value is None:
+        return None
     try:
-        number = float(value)
+        return float(str(value).strip().replace(",", "").replace("$", ""))
     except (TypeError, ValueError):
+        return None
+
+
+def compact_number(value: object) -> str:
+    number = numeric_value(value)
+    if number is None:
         return "—"
     for amount, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
         if abs(number) >= amount:
@@ -126,10 +138,100 @@ def compact_number(value: object) -> str:
 
 
 def money(value: object) -> str:
-    try:
-        return f"${float(value):,.2f}"
-    except (TypeError, ValueError):
+    number = numeric_value(value)
+    if number is None:
         return "—"
+    return f"${number:,.2f}"
+
+
+def token_count(value: object) -> str:
+    """Keep token values visually separate from currency values."""
+    formatted = compact_number(value)
+    return formatted if formatted == "—" else f"{formatted} token"
+
+
+def app_data_path() -> Path:
+    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    return Path(location) / "CodexBarLinux" / "token-history.json"
+
+
+def load_token_history(path: Path | None = None) -> dict[str, int]:
+    try:
+        payload = json.loads((path or app_data_path()).read_text())
+        days = payload.get("days", {}) if isinstance(payload, dict) else {}
+        return {key: int(value) for key, value in days.items() if isinstance(key, str) and numeric_value(value) is not None}
+    except (OSError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
+
+
+def save_token_history(days: dict[str, int], path: Path | None = None) -> None:
+    target = path or app_data_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps({"days": days}, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        # Geçmiş görünümü isteğe bağlıdır; yazma hatası ana dashboard'u durdurmamalı.
+        pass
+
+
+def extract_daily_tokens(cost: dict) -> dict[str, int]:
+    daily = cost.get("daily") if isinstance(cost.get("daily"), list) else []
+    tokens: dict[str, int] = {}
+    for item in daily:
+        if not isinstance(item, dict):
+            continue
+        value = numeric_value(item.get("totalTokens"))
+        raw_date = item.get("date")
+        try:
+            parsed = date.fromisoformat(str(raw_date))
+        except (TypeError, ValueError):
+            continue
+        if value is not None and value >= 0:
+            tokens[parsed.isoformat()] = round(value)
+    return tokens
+
+
+def merge_token_history(existing: dict[str, int], incoming: dict[str, int], today: date | None = None) -> dict[str, int]:
+    cutoff = (today or date.today()) - timedelta(days=364)
+    merged = dict(existing)
+    merged.update(incoming)
+    kept: dict[str, int] = {}
+    for raw_date, value in merged.items():
+        try:
+            if date.fromisoformat(raw_date) >= cutoff and value >= 0:
+                kept[raw_date] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return dict(sorted(kept.items()))
+
+
+def monthly_token_totals(days: dict[str, int], today: date | None = None) -> list[tuple[str, int]]:
+    reference = today or date.today()
+    months: list[tuple[int, int]] = []
+    year, month = reference.year, reference.month
+    for _ in range(12):
+        months.append((year, month))
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    totals = {(year, month): 0 for year, month in months}
+    for raw_date, tokens in days.items():
+        try:
+            parsed = date.fromisoformat(raw_date)
+        except (TypeError, ValueError):
+            continue
+        key = (parsed.year, parsed.month)
+        if key in totals:
+            totals[key] += tokens
+    return [(f"{MONTH_NAMES[month - 1]} {str(year)[-2:]}", totals[(year, month)]) for year, month in reversed(months)]
+
+
+def recent_token_days(days: dict[str, int], limit: int = 31) -> list[tuple[str, int]]:
+    return sorted(days.items(), reverse=True)[:limit]
+
+
+def app_icon() -> QIcon:
+    return QIcon(str(LOGO_PATH)) if LOGO_PATH.exists() else QIcon()
 
 
 def mask_email(email: str) -> str:
@@ -151,7 +253,7 @@ class ProgressTrack(QFrame):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#2a303b"))
+        painter.setBrush(QColor("#e4e9f1"))
         painter.drawRoundedRect(self.rect(), 4, 4)
         painter.setBrush(QColor(self.color))
         painter.drawRoundedRect(0, 0, round(self.width() * self.left / 100), self.height(), 4, 4)
@@ -162,18 +264,18 @@ class UsageWindow(QFrame):
         super().__init__()
         self.setObjectName("usageWindow")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 14, 0, 12)
+        layout.setContentsMargins(15, 13, 15, 14)
         header = QHBoxLayout()
         label = QLabel(data["label"])
         label.setObjectName("windowLabel")
-        percentage = QLabel(f"{data['left']:.0f}% left")
+        percentage = QLabel(f"%{data['left']:.0f} kaldı")
         percentage.setObjectName("percentage")
         header.addWidget(label)
         header.addStretch()
         header.addWidget(percentage)
         layout.addLayout(header)
         layout.addWidget(ProgressTrack(data["left"], color))
-        reset = QLabel(f"Resets in {data['reset']}")
+        reset = QLabel(f"Sıfırlanma: {data['reset']}")
         reset.setObjectName("reset")
         layout.addWidget(reset)
 
@@ -228,17 +330,101 @@ class Sparkline(QWidget):
             painter.drawEllipse(int(point[0] - 2), int(point[1] - 2), 4, 4)
 
 
+class MonthlyTokenChart(QWidget):
+    def __init__(self, months: list[tuple[str, int]]):
+        super().__init__()
+        self.months = months
+        self.setMinimumHeight(150)
+        self.setMouseTracking(True)
+
+    def chart_geometry(self) -> tuple[object, float, int]:
+        chart = self.rect().adjusted(8, 8, -8, -28)
+        gap = 6
+        width = max(5, (chart.width() - gap * (len(self.months) - 1)) / max(1, len(self.months)))
+        return chart, width, gap
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        chart, width, gap = self.chart_geometry()
+        maximum = max((value for _, value in self.months), default=0) or 1
+        painter.setFont(QFont("Sans", 8))
+        for index, (label, value) in enumerate(self.months):
+            height = round(chart.height() * value / maximum)
+            x = round(chart.left() + index * (width + gap))
+            painter.setBrush(QColor("#dce3ef"))
+            painter.drawRoundedRect(x, chart.bottom() - height, round(width), height, 4, 4)
+            if value:
+                painter.setBrush(QColor("#6176e7"))
+                painter.drawRoundedRect(x, chart.bottom() - height, round(width), height, 4, 4)
+            painter.setPen(QColor("#718096"))
+            painter.drawText(x - 7, self.height() - 21, round(width) + 14, 14, Qt.AlignmentFlag.AlignCenter, label.split()[0])
+            painter.setPen(Qt.PenStyle.NoPen)
+
+    def mouseMoveEvent(self, event):
+        chart, width, gap = self.chart_geometry()
+        position = event.position()
+        index = int((position.x() - chart.left()) // (width + gap))
+        if 0 <= index < len(self.months):
+            label, value = self.months[index]
+            QToolTip.showText(
+                event.globalPosition().toPoint(),
+                f"<b>{label}</b><br>{token_count(value)} harcandı",
+                self,
+            )
+        else:
+            QToolTip.hideText()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+
+class TokenValueRow(QFrame):
+    def __init__(self, label: str, tokens: int):
+        super().__init__()
+        self.setObjectName("tokenDayRow")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 9, 12, 9)
+        day_label = QLabel(label)
+        day_label.setObjectName("tokenDayLabel")
+        token_label = QLabel(token_count(tokens))
+        token_label.setObjectName("tokenDayValue")
+        row.addWidget(day_label)
+        row.addStretch()
+        row.addWidget(token_label)
+
+
+class TokenDayRow(TokenValueRow):
+    def __init__(self, raw_date: str, tokens: int):
+        try:
+            parsed = date.fromisoformat(raw_date)
+            label = f"{parsed.day} {MONTH_NAMES[parsed.month - 1]} {parsed.year}"
+        except ValueError:
+            label = raw_date
+        super().__init__(label, tokens)
+
+
 class Dashboard(QMainWindow):
     def __init__(self, command: str, fixture: str | None = None):
         super().__init__()
         self.command, self.fixture = command, fixture
         self.providers: list[dict] = []
         self.cost: dict = {}
+        self.token_history = load_token_history()
         self.revealed_provider_id: str | None = None
+        self.settings = QSettings("Utku", "CodexBarLinux")
+        saved_theme = str(self.settings.value("theme", "light"))
+        self.theme = saved_theme if saved_theme in {"light", "dark"} else "light"
+        saved_history_view = str(self.settings.value("token_history_view", "monthly"))
+        self.token_history_view = saved_history_view if saved_history_view in {"monthly", "daily"} else "monthly"
         self.setWindowTitle("CodexBar Linux")
+        self.setWindowIcon(app_icon())
         self.resize(500, 760)
         self.setMinimumSize(430, 620)
-        self.setStyleSheet(STYLE)
+        self.apply_theme()
         self.build_ui()
         self.refresh()
         self.timer = QTimer(self)
@@ -251,17 +437,33 @@ class Dashboard(QMainWindow):
         outer.setContentsMargins(20, 18, 20, 16)
         outer.setSpacing(10)
         header = QHBoxLayout()
-        brand = QVBoxLayout()
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        logo = QLabel()
+        logo.setObjectName("logo")
+        logo_pixmap = QPixmap(str(LOGO_PATH))
+        if not logo_pixmap.isNull():
+            logo.setPixmap(logo_pixmap.scaled(34, 34, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        logo.setFixedSize(34, 34)
+        brand_text = QVBoxLayout()
         title = QLabel("CodexBar")
         title.setObjectName("title")
-        subtitle = QLabel("AI usage limits")
+        subtitle = QLabel("AI kullanım ve maliyet özeti")
         subtitle.setObjectName("subtitle")
-        brand.addWidget(title)
-        brand.addWidget(subtitle)
+        brand_text.addWidget(title)
+        brand_text.addWidget(subtitle)
+        brand.addWidget(logo)
+        brand.addLayout(brand_text)
         header.addLayout(brand)
         header.addStretch()
-        self.refresh_button = QPushButton("↻")
-        self.refresh_button.setToolTip("Refresh")
+        self.theme_button = QPushButton()
+        self.theme_button.setObjectName("themeButton")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        header.addWidget(self.theme_button)
+        self.update_theme_button()
+        self.refresh_button = QPushButton("Yenile")
+        self.refresh_button.setObjectName("refreshButton")
+        self.refresh_button.setToolTip("Kullanım verisini yenile")
         self.refresh_button.clicked.connect(self.refresh)
         header.addWidget(self.refresh_button)
         outer.addLayout(header)
@@ -269,7 +471,9 @@ class Dashboard(QMainWindow):
         selector.setObjectName("selector")
         selector_layout = QHBoxLayout(selector)
         selector_layout.setContentsMargins(12, 8, 12, 8)
-        selector_layout.addWidget(QLabel("Provider"))
+        provider_label = QLabel("Sağlayıcı")
+        provider_label.setObjectName("sectionLabel")
+        selector_layout.addWidget(provider_label)
         self.provider_picker = QComboBox()
         self.provider_picker.currentIndexChanged.connect(self.select_provider)
         selector_layout.addWidget(self.provider_picker, 1)
@@ -277,14 +481,30 @@ class Dashboard(QMainWindow):
         self.tabs = QTabWidget()
         self.usage_page = self.make_usage_page()
         self.spend_page = self.make_spend_page()
-        self.tabs.addTab(self.usage_page, "Usage")
-        self.tabs.addTab(self.spend_page, "Spend")
+        self.tabs.addTab(self.usage_page, "Kullanım")
+        self.tabs.addTab(self.spend_page, "Maliyet")
         outer.addWidget(self.tabs, 1)
         self.footer = QLabel()
         self.footer.setObjectName("footer")
         self.footer.setWordWrap(True)
         outer.addWidget(self.footer)
         self.setCentralWidget(root)
+
+    def apply_theme(self):
+        self.setStyleSheet(style_for_theme(self.theme))
+        if hasattr(self, "theme_button"):
+            self.update_theme_button()
+
+    def update_theme_button(self):
+        is_dark = self.theme == "dark"
+        self.theme_button.setText("☀" if is_dark else "☾")
+        self.theme_button.setToolTip("Açık temaya geç" if is_dark else "Koyu temaya geç")
+        self.theme_button.setAccessibleName(self.theme_button.toolTip())
+
+    def toggle_theme(self):
+        self.theme = "dark" if self.theme == "light" else "light"
+        self.settings.setValue("theme", self.theme)
+        self.apply_theme()
 
     def make_usage_page(self) -> QWidget:
         scroll = QScrollArea()
@@ -315,7 +535,10 @@ class Dashboard(QMainWindow):
 
     def refresh(self):
         current_id = self.current_provider_id()
-        self.providers, error = read_usage(self.command, self.fixture)
+        providers, error = read_usage(self.command, self.fixture)
+        # Geçici CLI hatasında son başarılı ekranı koru.
+        if providers:
+            self.providers = providers
         self.provider_picker.blockSignals(True)
         self.provider_picker.clear()
         for provider in self.providers:
@@ -324,11 +547,14 @@ class Dashboard(QMainWindow):
         if self.providers:
             index = next((i for i, item in enumerate(self.providers) if item["id"] == current_id), 0)
             self.provider_picker.setCurrentIndex(index)
-            self.select_provider(index)
+            if providers:
+                self.select_provider(index)
+            else:
+                self.footer.setText(f"Son başarılı veri gösteriliyor · {error or 'Yenileme başarısız'}")
         else:
             self.clear_layout(self.usage_layout)
             self.clear_layout(self.spend_layout)
-            self.footer.setText(error or "No provider data.")
+            self.footer.setText(error or "Gösterilecek sağlayıcı verisi yok.")
 
     def current_provider_id(self) -> str:
         return str(self.provider_picker.currentData() or "")
@@ -339,10 +565,17 @@ class Dashboard(QMainWindow):
         provider = self.providers[index]
         self.revealed_provider_id = None
         self.cost, cost_error = read_cost(self.command, provider["id"]) if not self.fixture else ({}, None)
+        self.update_token_history()
         self.render_usage(provider)
         self.render_spend(provider)
         updated = datetime.now().strftime("%H:%M")
-        self.footer.setText(f"Updated {updated} · {provider['source']}" + (f" · {cost_error}" if cost_error else ""))
+        self.footer.setText(f"Son güncelleme {updated} · {provider['source']}" + (f" · {cost_error}" if cost_error else ""))
+
+    def update_token_history(self):
+        incoming = extract_daily_tokens(self.cost)
+        if incoming:
+            self.token_history = merge_token_history(self.token_history, incoming)
+            save_token_history(self.token_history)
 
     def render_usage(self, provider: dict):
         self.clear_layout(self.usage_layout)
@@ -371,13 +604,19 @@ class Dashboard(QMainWindow):
         layout.addWidget(name)
         layout.addLayout(meta_row)
         self.usage_layout.addWidget(identity)
+        usage_heading = QLabel("Kullanım limitleri")
+        usage_heading.setObjectName("sectionTitle")
+        usage_hint = QLabel("Her pencere için kalan kapasite ve sıfırlanma zamanı")
+        usage_hint.setObjectName("sectionHint")
+        self.usage_layout.addWidget(usage_heading)
+        self.usage_layout.addWidget(usage_hint)
         for window_data, color in zip(provider["windows"], ("#7c9cff", "#b084f7", "#58d1bb")):
             self.usage_layout.addWidget(UsageWindow(window_data, color))
         pace = QFrame()
         pace.setObjectName("pace")
         pace_layout = QVBoxLayout(pace)
         pace_layout.setContentsMargins(15, 13, 15, 13)
-        pace_label = QLabel("Pace")
+        pace_label = QLabel("Kullanım temposu")
         pace_label.setObjectName("paceLabel")
         pace_text = QLabel(provider["pace"])
         pace_text.setWordWrap(True)
@@ -387,10 +626,10 @@ class Dashboard(QMainWindow):
         self.usage_layout.addWidget(pace)
         grid = QGridLayout()
         credit = "—" if provider["credits"] is None else compact_number(provider["credits"])
-        grid.addWidget(StatTile("Credits", credit, provider["credit_unit"]), 0, 0)
-        grid.addWidget(StatTile("Today", money(self.cost.get("sessionCostUSD"))), 0, 1)
-        grid.addWidget(StatTile("Latest tokens", compact_number(self.cost.get("sessionTokens"))), 1, 0)
-        grid.addWidget(StatTile("Last 31 days", money(self.cost.get("last30DaysCostUSD"))), 1, 1)
+        grid.addWidget(StatTile("Kredi", credit, provider["credit_unit"]), 0, 0)
+        grid.addWidget(StatTile("Bu oturum maliyeti", money(self.cost.get("sessionCostUSD")), "USD"), 0, 1)
+        grid.addWidget(StatTile("Bu oturum tokenleri", token_count(self.cost.get("sessionTokens"))), 1, 0)
+        grid.addWidget(StatTile("Son 31 gün maliyeti", money(self.cost.get("last30DaysCostUSD")), "USD"), 1, 1)
         self.usage_layout.addLayout(grid)
         self.usage_layout.addStretch()
 
@@ -402,23 +641,24 @@ class Dashboard(QMainWindow):
 
     def render_spend(self, provider: dict):
         self.clear_layout(self.spend_layout)
+        self.render_token_history()
         if not self.cost:
-            empty = QLabel("Local cost history is not available for this provider yet.")
+            empty = QLabel("Bu sağlayıcı için yerel maliyet geçmişi henüz bulunmuyor.")
             empty.setObjectName("empty")
             self.spend_layout.addWidget(empty)
             self.spend_layout.addStretch()
             return
         grid = QGridLayout()
-        grid.addWidget(StatTile("Last 31 days cost", money(self.cost.get("last30DaysCostUSD"))), 0, 0)
-        grid.addWidget(StatTile("Last 31 days tokens", compact_number(self.cost.get("last30DaysTokens"))), 0, 1)
-        grid.addWidget(StatTile("This session", money(self.cost.get("sessionCostUSD"))), 1, 0)
-        grid.addWidget(StatTile("Session tokens", compact_number(self.cost.get("sessionTokens"))), 1, 1)
+        grid.addWidget(StatTile("Son 31 gün maliyeti", money(self.cost.get("last30DaysCostUSD")), "USD"), 0, 0)
+        grid.addWidget(StatTile("Son 31 gün tokenleri", token_count(self.cost.get("last30DaysTokens"))), 0, 1)
+        grid.addWidget(StatTile("Bu oturum maliyeti", money(self.cost.get("sessionCostUSD")), "USD"), 1, 0)
+        grid.addWidget(StatTile("Bu oturum tokenleri", token_count(self.cost.get("sessionTokens"))), 1, 1)
         self.spend_layout.addLayout(grid)
         chart = QFrame()
         chart.setObjectName("chart")
         chart_layout = QVBoxLayout(chart)
         chart_layout.setContentsMargins(15, 13, 15, 13)
-        chart_layout.addWidget(QLabel("Daily cost · local Codex logs"))
+        chart_layout.addWidget(QLabel("Günlük maliyet · yerel Codex kayıtları"))
         daily = self.cost.get("daily") if isinstance(self.cost.get("daily"), list) else []
         values = [float(day.get("totalCost", 0)) for day in daily if isinstance(day, dict)]
         chart_layout.addWidget(Sparkline(values))
@@ -430,7 +670,7 @@ class Dashboard(QMainWindow):
             models_panel.setObjectName("chart")
             models_layout = QVBoxLayout(models_panel)
             models_layout.setContentsMargins(15, 13, 15, 13)
-            models_layout.addWidget(QLabel("Top models"))
+            models_layout.addWidget(QLabel("En çok kullanılan modeller"))
             for row in sorted(breakdowns, key=lambda item: item.get("cost", 0), reverse=True)[:4]:
                 line = QHBoxLayout()
                 line.addWidget(QLabel(str(row.get("modelName", "Model"))))
@@ -440,64 +680,193 @@ class Dashboard(QMainWindow):
             self.spend_layout.addWidget(models_panel)
         self.spend_layout.addStretch()
 
+    def render_token_history(self):
+        history = QFrame()
+        history.setObjectName("chart")
+        layout = QVBoxLayout(history)
+        layout.setContentsMargins(15, 13, 15, 13)
+        header = QHBoxLayout()
+        heading = QLabel("12 aylık token geçmişi")
+        heading.setObjectName("historyTitle")
+        header.addWidget(heading)
+        header.addStretch()
+        view_picker = QComboBox()
+        view_picker.setObjectName("historyPicker")
+        view_picker.addItem("Aylık toplam", "monthly")
+        view_picker.addItem("Günlük ayrıntı", "daily")
+        view_picker.setCurrentIndex(0 if self.token_history_view == "monthly" else 1)
+        view_picker.currentIndexChanged.connect(self.set_token_history_view)
+        header.addWidget(view_picker)
+        summary = QLabel("Günlük kayıtlar bu cihazda saklanır; en eski kayıtlar 365 gün sonra temizlenir.")
+        summary.setObjectName("historyHint")
+        summary.setWordWrap(True)
+        layout.addLayout(header)
+        layout.addWidget(summary)
+        if self.token_history_view == "monthly":
+            months = monthly_token_totals(self.token_history)
+            layout.addWidget(MonthlyTokenChart(months))
+            for label, tokens in reversed(months):
+                layout.addWidget(TokenValueRow(label, tokens))
+        else:
+            title = QLabel("Kayıt bulunan günler · son 365 gün")
+            title.setObjectName("historyHint")
+            layout.addWidget(title)
+            for raw_date, tokens in recent_token_days(self.token_history, 365):
+                layout.addWidget(TokenDayRow(raw_date, tokens))
+        self.spend_layout.addWidget(history)
 
-STYLE = """
-QMainWindow, QWidget { background:#101216; color:#f2f3f5; font-family:Inter, Noto Sans, sans-serif; }
-#title { font-size:25px; font-weight:700; letter-spacing:-.4px; }
-#subtitle, #footer, #meta, #reset, #statLabel, #statDetail { color:#9299a8; }
-#subtitle { font-size:12px; }
-#footer { font-size:11px; padding:3px 2px; }
-#selector { background:transparent; border:0; }
-#identity { background:#171a20; border:0; border-radius:14px; }
-#pace { background:#14201e; border:0; border-radius:12px; }
-#chart { background:#171a20; border:0; border-radius:12px; }
-#statTile { background:transparent; border:0; border-radius:0; }
-QComboBox { background:#1c2027; border:0; border-radius:8px; padding:7px 10px; min-width:190px; }
+    def set_token_history_view(self, index: int):
+        view = "daily" if index == 1 else "monthly"
+        if view == self.token_history_view:
+            return
+        self.token_history_view = view
+        self.settings.setValue("token_history_view", view)
+        provider_index = self.provider_picker.currentIndex()
+        if 0 <= provider_index < len(self.providers):
+            self.render_spend(self.providers[provider_index])
+
+
+LIGHT_STYLE = """
+QMainWindow, QWidget { background:#f5f7fb; color:#172236; font-family:Inter, Noto Sans, sans-serif; }
+QLabel { background:transparent; }
+#title { font-size:26px; font-weight:800; letter-spacing:-.6px; color:#142033; }
+#subtitle, #footer, #meta, #reset, #statLabel, #statDetail { color:#68758a; }
+#subtitle { font-size:12px; color:#68758a; }
+#footer { font-size:11px; padding:3px 2px; color:#718096; }
+#selector { background:#ffffff; border:1px solid #dfe5ee; border-radius:12px; }
+#sectionLabel { color:#536176; font-size:11px; font-weight:800; }
+#sectionTitle { color:#172236; font-size:16px; font-weight:800; margin-top:6px; }
+#sectionHint { color:#718096; font-size:11px; margin-bottom:1px; }
+#identity { background:#ffffff; border:1px solid #dfe5ee; border-radius:14px; }
+#pace { background:#eefaf4; border:1px solid #c9ebd8; border-radius:12px; }
+#chart { background:#ffffff; border:1px solid #dfe5ee; border-radius:12px; }
+#statTile { background:#ffffff; border:1px solid #dfe5ee; border-radius:12px; }
+QComboBox { background:#f8faff; border:1px solid #cfd8e6; border-radius:8px; padding:7px 10px; min-width:190px; color:#172236; }
 QComboBox::drop-down { border:0; width:24px; }
-QPushButton { background:#1c2027; border:0; border-radius:9px; padding:7px 12px; color:#eef1f8; font-size:16px; }
-QPushButton:hover { background:#262c35; }
+QComboBox QAbstractItemView { background:#ffffff; color:#172236; selection-background-color:#e4eaff; selection-color:#263b8f; border:1px solid #cfd8e6; }
+QPushButton { background:#ffffff; border:1px solid #cfd8e6; border-radius:9px; padding:7px 12px; color:#27364d; font-size:13px; font-weight:700; }
+QPushButton:hover { background:#f0f3fa; }
+#refreshButton { background:#5b6ed6; border-color:#5b6ed6; color:#ffffff; }
+#refreshButton:hover { background:#4d60c4; border-color:#4d60c4; }
+#themeButton { min-width:18px; padding:7px 10px; font-size:15px; }
 QTabWidget::pane { border:0; }
-QTabBar::tab { background:transparent; color:#8f97a7; padding:10px 16px; margin-right:3px; }
-QTabBar::tab:selected { color:#f4f6fb; border-bottom:2px solid #8aa2ff; }
-QScrollArea { border:0; background:transparent; }
-#providerName { font-size:20px; font-weight:650; color:#f6f7fb; }
-#meta { color:#6fd79a; font-size:12px; margin-top:3px; }
-#plan { color:#b6bfce; font-size:12px; }
-#eyeButton { background:transparent; border:0; padding:0; color:#aab3c4; font-size:14px; }
-#eyeButton:hover { color:#f3f5fb; background:#262d38; border-radius:6px; }
-#usageWindow { border-bottom:1px solid #222730; }
-#windowLabel { font-size:15px; color:#f0f2f7; font-weight:600; }
-#percentage { color:#f0f2f7; font-size:14px; font-weight:600; }
-#reset { font-size:12px; margin-top:7px; }
-#paceLabel { color:#75dda5; font-weight:600; }
-#paceText { color:#b9c7c0; font-size:12px; margin-top:4px; }
-#statValue { color:#f6f7fb; font-size:17px; font-weight:650; }
-#statDetail { font-size:10px; }
-#chart QLabel { color:#c5cbd7; font-size:12px; }
-#empty { color:#9299a8; padding:24px 8px; }
+QTabBar::tab { background:transparent; color:#718096; padding:10px 16px; margin-right:3px; font-weight:800; }
+QTabBar::tab:selected { color:#263b8f; border-bottom:2px solid #5b6ed6; }
+QScrollArea { border:0; background:#f5f7fb; }
+#providerName { font-size:21px; font-weight:800; color:#142033; }
+#meta { color:#208353; font-size:12px; margin-top:3px; }
+#plan { color:#526176; font-size:12px; font-weight:700; }
+#eyeButton { background:transparent; border:0; padding:0; color:#68758a; font-size:14px; }
+#eyeButton:hover { color:#263b8f; background:#edf0ff; border-radius:6px; }
+#usageWindow { background:#ffffff; border:1px solid #dfe5ee; border-radius:12px; }
+#windowLabel { font-size:15px; color:#1b2a40; font-weight:800; }
+#percentage { background:#e8edff; color:#3449a4; border-radius:7px; padding:4px 8px; font-size:13px; font-weight:800; }
+#reset { color:#68758a; font-size:12px; margin-top:7px; }
+#paceLabel { color:#208353; font-weight:800; }
+#paceText { color:#47705c; font-size:12px; margin-top:4px; }
+#statValue { color:#142033; font-size:19px; font-weight:800; }
+#statLabel { color:#526176; font-size:11px; font-weight:700; }
+#statDetail { color:#8793a5; font-size:10px; }
+#chart QLabel { color:#394960; font-size:12px; font-weight:700; }
+#historyTitle { color:#172236; font-size:15px; font-weight:800; }
+#historyHint { color:#718096; font-size:11px; margin-bottom:3px; }
+#historyPicker { min-width:130px; font-size:11px; font-weight:700; }
+#tokenDayRow { background:#f8faff; border:1px solid #e1e7f0; border-radius:8px; }
+#tokenDayLabel { color:#526176; font-size:12px; font-weight:700; }
+#tokenDayValue { color:#263b8f; font-size:12px; font-weight:800; }
+#empty { color:#68758a; padding:24px 8px; }
+QScrollBar:vertical { background:#edf1f6; width:9px; margin:2px 0; }
+QScrollBar::handle:vertical { background:#c4cedd; border-radius:4px; min-height:30px; }
+QScrollBar::handle:vertical:hover { background:#aab8cc; }
+QToolTip { background:#172236; color:#ffffff; border:1px solid #3449a4; border-radius:7px; padding:7px 9px; font-size:12px; }
 """
 
 
+DARK_STYLE = """
+QMainWindow, QWidget { background:#12151b; color:#f3f5f8; font-family:Inter, Noto Sans, sans-serif; }
+QLabel { background:transparent; }
+#title { font-size:26px; font-weight:800; letter-spacing:-.6px; color:#ffffff; }
+#subtitle { font-size:12px; color:#aeb8c8; }
+#footer { font-size:11px; padding:3px 2px; color:#9da9ba; }
+#selector { background:#1b2029; border:1px solid #303846; border-radius:12px; }
+#sectionLabel { color:#c5cedb; font-size:11px; font-weight:800; }
+#sectionTitle { color:#f6f8fb; font-size:16px; font-weight:800; margin-top:6px; }
+#sectionHint { color:#aeb8c8; font-size:11px; margin-bottom:1px; }
+#identity { background:#1b2029; border:1px solid #303846; border-radius:14px; }
+#pace { background:#162920; border:1px solid #2e5e49; border-radius:12px; }
+#chart { background:#1b2029; border:1px solid #303846; border-radius:12px; }
+#statTile { background:#1b2029; border:1px solid #303846; border-radius:12px; }
+QComboBox { background:#232a35; border:1px solid #3b4657; border-radius:8px; padding:7px 10px; min-width:190px; color:#f3f5f8; }
+QComboBox::drop-down { border:0; width:24px; }
+QComboBox QAbstractItemView { background:#232a35; color:#f3f5f8; selection-background-color:#354a93; selection-color:#ffffff; border:1px solid #3b4657; }
+QPushButton { background:#232a35; border:1px solid #3b4657; border-radius:9px; padding:7px 12px; color:#f3f5f8; font-size:13px; font-weight:700; }
+QPushButton:hover { background:#2b3442; }
+#themeButton { min-width:18px; padding:7px 10px; font-size:15px; }
+#refreshButton { background:#7185f6; border-color:#7185f6; color:#111521; }
+#refreshButton:hover { background:#8b9bff; border-color:#8b9bff; }
+QTabWidget::pane { border:0; }
+QTabBar::tab { background:transparent; color:#aeb8c8; padding:10px 16px; margin-right:3px; font-weight:800; }
+QTabBar::tab:selected { color:#bac7ff; border-bottom:2px solid #8da0ff; }
+QScrollArea { border:0; background:#12151b; }
+#providerName { font-size:21px; font-weight:800; color:#ffffff; }
+#meta { color:#72d9a0; font-size:12px; margin-top:3px; }
+#plan { color:#d7dee8; font-size:12px; font-weight:700; }
+#eyeButton { background:transparent; border:0; padding:0; color:#aeb8c8; font-size:14px; }
+#eyeButton:hover { color:#c7d0ff; background:#293149; border-radius:6px; }
+#usageWindow { background:#1b2029; border:1px solid #303846; border-radius:12px; }
+#windowLabel { font-size:15px; color:#f5f7fb; font-weight:800; }
+#percentage { background:#293657; color:#cbd5ff; border-radius:7px; padding:4px 8px; font-size:13px; font-weight:800; }
+#reset { color:#b5c0d0; font-size:12px; margin-top:7px; }
+#paceLabel { color:#80e0ac; font-weight:800; }
+#paceText { color:#c2d9ca; font-size:12px; margin-top:4px; }
+#statValue { color:#ffffff; font-size:19px; font-weight:800; }
+#statLabel { color:#bdc7d5; font-size:11px; font-weight:700; }
+#statDetail { color:#9da9ba; font-size:10px; }
+#chart QLabel { color:#d7dee8; font-size:12px; font-weight:700; }
+#historyTitle { color:#f3f5f8; font-size:15px; font-weight:800; }
+#historyHint { color:#aeb8c8; font-size:11px; margin-bottom:3px; }
+#historyPicker { min-width:130px; font-size:11px; font-weight:700; }
+#tokenDayRow { background:#222832; border:1px solid #343f4f; border-radius:8px; }
+#tokenDayLabel { color:#c8d0dc; font-size:12px; font-weight:700; }
+#tokenDayValue { color:#cbd5ff; font-size:12px; font-weight:800; }
+#empty { color:#b5c0d0; padding:24px 8px; }
+QScrollBar:vertical { background:#12151b; width:9px; margin:2px 0; }
+QScrollBar::handle:vertical { background:#3b4657; border-radius:4px; min-height:30px; }
+QScrollBar::handle:vertical:hover { background:#536176; }
+QToolTip { background:#f3f5f8; color:#172236; border:1px solid #7185f6; border-radius:7px; padding:7px 9px; font-size:12px; }
+"""
+
+
+def style_for_theme(theme: str) -> str:
+    return DARK_STYLE if theme == "dark" else LIGHT_STYLE
+
+
+def acquire_single_instance() -> QSharedMemory | None:
+    """Return a process-held guard, or None if CodexBar is already running."""
+    guard = QSharedMemory(APP_INSTANCE_NAME)
+    return guard if guard.create(1) else None
+
+
 def make_tray(window: Dashboard) -> QSystemTrayIcon:
-    pixmap = QPixmap(32, 32)
-    pixmap.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-    painter.setBrush(QColor("#849dff"))
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.drawEllipse(3, 3, 26, 26)
-    painter.setPen(QColor("#151821"))
-    painter.setFont(QFont("Sans", 15, QFont.Weight.Bold))
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "C")
-    painter.end()
-    tray = QSystemTrayIcon(QIcon(pixmap), window)
+    icon = app_icon()
+    if icon.isNull():
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setBrush(QColor("#849dff"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(3, 3, 26, 26)
+        painter.end()
+        icon = QIcon(pixmap)
+    tray = QSystemTrayIcon(icon, window)
     menu = QMenu()
-    show = QAction("Open CodexBar Linux", menu)
+    show = QAction("CodexBar Linux'ı aç", menu)
     show.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
     menu.addAction(show)
-    menu.addAction("Refresh", window.refresh)
+    menu.addAction("Yenile", window.refresh)
     menu.addSeparator()
-    menu.addAction("Quit", QApplication.instance().quit)
+    menu.addAction("Çıkış", QApplication.instance().quit)
     tray.setContextMenu(menu)
     tray.activated.connect(lambda reason: window.show() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
@@ -511,10 +880,15 @@ def main():
     args = parser.parse_args()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    instance_guard = acquire_single_instance()
+    if instance_guard is None:
+        print("CodexBar zaten arka planda çalışıyor.")
+        return
     window = Dashboard(args.cli, args.fixture)
     tray = make_tray(window)
     window.show()
     window._tray = tray
+    window._instance_guard = instance_guard
     sys.exit(app.exec())
 
 

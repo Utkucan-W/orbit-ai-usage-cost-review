@@ -28,8 +28,16 @@ python3 app.py --fixture tests/fixtures/usage.json
 
 - Siteye benzer kompakt `Usage` görünümü: provider seçimi, hesap/plan, kalan
   kullanım, reset sayaçları ve pace metni.
+- Başlıktaki ay/güneş düğmesiyle açık ve koyu tema; son tercih uygulama
+  yeniden açıldığında korunur.
 - `Spend` görünümü: güncel/30 günlük maliyet, token toplamları, günlük maliyet
   grafiği ve model kırılımı.
+- 12 aylık token geçmişi: günlük `totalTokens` kayıtları bu cihazda en fazla
+  365 gün tutulur; aylık grafik ve her kayıt günü için token satırı gösterilir.
+- Uygulama aynı anda yalnızca bir kez açılır; ikinci başlatma, yeni pencere veya
+  tepsi ikonu oluşturmadan sonlanır.
+- `assets/codexbar-linux-logo.png` özgün uygulama logosudur; pencere ve sistem
+  tepsisinde kullanılır.
 - Sistem tepsisi menüsü ve 60 saniyelik otomatik yenileme.
 - Upstream CLI'dan gelen gerçek kullanım ve yerel maliyet verisi.
 
