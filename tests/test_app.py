@@ -1,7 +1,7 @@
 import json
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timezone, timedelta
 from pathlib import Path
 
 import app
@@ -43,6 +43,24 @@ class AppTests(unittest.TestCase):
         ]}
         self.assertEqual(app.extract_daily_tokens(cost), {"2026-08-22": 1200})
 
+    def test_extract_daily_costs_discards_invalid_rows_and_sorts(self):
+        cost = {"daily": [
+            {"date": "2026-08-23", "totalCost": "1.25"},
+            {"date": "invalid", "totalCost": 3},
+            {"date": "2026-08-22", "totalCostUSD": "$0.50"},
+            {"date": "2026-08-24", "totalCost": -1},
+        ]}
+        self.assertEqual(app.extract_daily_costs(cost), [("2026-08-22", 0.5), ("2026-08-23", 1.25)])
+
+    def test_pace_summary_is_turkish_and_actionable(self):
+        summary = app.pace_summary([{"label": "Oturum", "left": 58, "reset": "2 sa. 14 dk."}])
+        self.assertEqual(summary["headline"], "Kullanımın dengeli")
+        self.assertEqual(summary["detail"], "Oturum penceresinde %58 kapasite kaldı · Sıfırlanma: 2 sa. 14 dk.")
+
+    def test_pace_summary_handles_missing_windows(self):
+        self.assertEqual(app.pace_summary([])["headline"], "Tempo hesaplanamadı")
+        self.assertEqual(app.pace_summary({})["headline"], "Tempo hesaplanamadı")
+
     def test_token_history_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "token-history.json"
@@ -73,6 +91,36 @@ class AppTests(unittest.TestCase):
         self.assertEqual(providers[0]["windows"][0]["label"], "Weekly")
         self.assertEqual(providers[0]["windows"][0]["left"], 85)
         self.assertIn("Aug 27", providers[0]["windows"][0]["reset"])
+
+    def test_absolute_reset_timestamp_uses_local_timezone(self):
+        local_tz = timezone(timedelta(hours=3))
+        self.assertEqual(app.format_reset("2026-08-27T13:39:00Z", local_tz), "27 Ağu 16:39")
+
+    def test_relative_reset_description_is_preserved(self):
+        self.assertIsNone(app.format_reset("2h 14m"))
+
+    def test_cached_provider_snapshot_round_trip(self):
+        class Settings:
+            def __init__(self):
+                self.values = {}
+
+            def value(self, key, default=""):
+                return self.values.get(key, default)
+
+            def setValue(self, key, value):
+                self.values[key] = value
+
+        settings = Settings()
+        providers = [{"id": "codex", "name": "Codex", "windows": []}]
+        app.save_cached_providers(settings, providers)
+        self.assertEqual(app.load_cached_providers(settings), providers)
+
+    def test_malformed_cached_provider_snapshot_is_ignored(self):
+        class Settings:
+            def value(self, key, default=""):
+                return "not-json"
+
+        self.assertEqual(app.load_cached_providers(Settings()), [])
 
 
 if __name__ == "__main__":

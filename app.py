@@ -5,7 +5,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 from PyQt6.QtCore import QSettings, QSharedMemory, QStandardPaths, Qt, QTimer
@@ -20,6 +20,7 @@ DEFAULT_CLI = "/home/utkucan/.local/bin/codexbar-0540"
 APP_INSTANCE_NAME = "codexbar-linux-single-instance-v1"
 LOGO_PATH = Path(__file__).parent / "assets" / "codexbar-linux-logo.png"
 MONTH_NAMES = ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
+CACHED_PROVIDERS_KEY = "cached_providers"
 
 
 def cli_path() -> str:
@@ -62,15 +63,57 @@ def read_cost(command: str, provider: str) -> tuple[dict, str | None]:
     return {}, "Bu sağlayıcı için yerel maliyet verisi yok."
 
 
+def format_reset(value: object, local_tz: tzinfo | None = None) -> str | None:
+    """Format an absolute ISO reset timestamp in the user's local timezone."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    target_tz = local_tz or datetime.now().astimezone().tzinfo
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=target_tz)
+    return f"{parsed.astimezone(target_tz).day} {MONTH_NAMES[parsed.astimezone(target_tz).month - 1]} {parsed.astimezone(target_tz):%H:%M}"
+
+
 def window(raw: object, label: str) -> dict | None:
     if not isinstance(raw, dict) or raw.get("usedPercent") is None:
         return None
     used = clamp_percent(raw.get("usedPercent"))
+    reset_value = raw.get("resetDescription") or raw.get("resetsAt")
+    reset = format_reset(reset_value) or reset_value or "Reset zamanı bilinmiyor"
     return {
         "label": label,
         "used": used,
         "left": 100 - used,
-        "reset": raw.get("resetDescription") or raw.get("resetsAt") or "Reset zamanı bilinmiyor",
+        "reset": reset,
+    }
+
+
+def pace_summary(windows: list[dict]) -> dict[str, str]:
+    """Build a useful Turkish pace card from stable, provider-independent usage data."""
+    valid_windows = [item for item in windows if isinstance(item, dict)] if isinstance(windows, list) else []
+    if not valid_windows:
+        return {
+            "headline": "Tempo hesaplanamadı",
+            "detail": "Kullanım penceresi verisi geldiğinde burada net bir özet göreceksin.",
+        }
+
+    primary = valid_windows[0]
+    left = clamp_percent(primary.get("left"))
+    if left >= 70:
+        headline = "Rahat ilerliyorsun"
+    elif left >= 40:
+        headline = "Kullanımın dengeli"
+    elif left >= 15:
+        headline = "Temponu takip et"
+    else:
+        headline = "Limit yaklaşıyor"
+    return {
+        "headline": headline,
+        "detail": f"{primary.get('label', 'Aktif')} penceresinde %{left:.0f} kapasite kaldı · Sıfırlanma: {primary.get('reset', 'bilinmiyor')}",
     }
 
 
@@ -105,9 +148,24 @@ def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
             "windows": windows,
             "credits": credits.get("remaining"),
             "credit_unit": credits.get("unit") or "credits",
-            "pace": pace_window.get("summary") or "Yeterli veri oluştuğunda kullanım temposu burada görünecek.",
+            # Upstream pace prose changes frequently; the UI derives its stable summary from windows.
+            "pace": pace_window,
         })
     return providers, None if providers else "Kullanılabilir provider verisi bulunamadı."
+
+
+def load_cached_providers(settings: QSettings) -> list[dict]:
+    """Read the last successful usage snapshot without trusting malformed data."""
+    raw = settings.value(CACHED_PROVIDERS_KEY, "")
+    try:
+        cached = json.loads(str(raw)) if raw else []
+    except json.JSONDecodeError:
+        return []
+    return cached if isinstance(cached, list) and all(isinstance(item, dict) for item in cached) else []
+
+
+def save_cached_providers(settings: QSettings, providers: list[dict]) -> None:
+    settings.setValue(CACHED_PROVIDERS_KEY, json.dumps(providers, ensure_ascii=False))
 
 
 def clamp_percent(value: object) -> float:
@@ -189,6 +247,28 @@ def extract_daily_tokens(cost: dict) -> dict[str, int]:
         if value is not None and value >= 0:
             tokens[parsed.isoformat()] = round(value)
     return tokens
+
+
+def extract_daily_costs(cost: dict) -> list[tuple[str, float]]:
+    """Accept incomplete CLI day entries and return a chronologically stable series."""
+    daily = cost.get("daily") if isinstance(cost.get("daily"), list) else []
+    costs: dict[str, float] = {}
+    for item in daily:
+        if not isinstance(item, dict):
+            continue
+        value = numeric_value(
+            item.get("totalCost")
+            if item.get("totalCost") is not None
+            else item.get("totalCostUSD", item.get("costUSD", item.get("cost")))
+        )
+        raw_date = item.get("date")
+        try:
+            parsed = date.fromisoformat(str(raw_date))
+        except (TypeError, ValueError):
+            continue
+        if value is not None and value >= 0:
+            costs[parsed.isoformat()] = value
+    return sorted(costs.items())
 
 
 def merge_token_history(existing: dict[str, int], incoming: dict[str, int], today: date | None = None) -> dict[str, int]:
@@ -299,18 +379,35 @@ class StatTile(QFrame):
 
 
 class Sparkline(QWidget):
-    def __init__(self, values: list[float]):
+    def __init__(self, points: list[tuple[str, float]]):
         super().__init__()
-        self.values = values or [0]
+        self.points = points
         self.setMinimumHeight(105)
+        self.setMouseTracking(True)
+
+    def plot_rect(self):
+        return self.rect().adjusted(4, 10, -4, -8)
+
+    def point_positions(self) -> list[tuple[float, float]]:
+        if not self.points:
+            return []
+        rect = self.plot_rect()
+        maximum = max((value for _, value in self.points), default=0) or 1
+        step = rect.width() / max(1, len(self.points) - 1)
+        return [
+            (rect.left() + index * step, rect.bottom() - (value / maximum) * rect.height())
+            for index, (_, value) in enumerate(self.points)
+        ]
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = self.rect().adjusted(4, 10, -4, -8)
-        maximum = max(self.values) or 1
-        step = rect.width() / max(1, len(self.values) - 1)
-        points = [(rect.left() + index * step, rect.bottom() - (value / maximum) * rect.height()) for index, value in enumerate(self.values)]
+        rect = self.plot_rect()
+        points = self.point_positions()
+        if not points:
+            painter.setPen(QColor("#718096"))
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Grafik için günlük maliyet verisi yok")
+            return
         path = QPainterPath()
         path.moveTo(*points[0])
         for point in points[1:]:
@@ -328,6 +425,25 @@ class Sparkline(QWidget):
         painter.setBrush(QColor("#a6b8ff"))
         for point in points:
             painter.drawEllipse(int(point[0] - 2), int(point[1] - 2), 4, 4)
+
+    def mouseMoveEvent(self, event):
+        positions = self.point_positions()
+        if not positions:
+            QToolTip.hideText()
+            return
+        nearest_index = min(range(len(positions)), key=lambda index: abs(positions[index][0] - event.position().x()))
+        label, value = self.points[nearest_index]
+        try:
+            parsed = date.fromisoformat(label)
+            label = f"{parsed.day} {MONTH_NAMES[parsed.month - 1]} {parsed.year}"
+        except ValueError:
+            pass
+        QToolTip.showText(event.globalPosition().toPoint(), f"<b>{label}</b><br>{money(value)} harcandı", self)
+        event.accept()
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
 
 
 class MonthlyTokenChart(QWidget):
@@ -366,7 +482,8 @@ class MonthlyTokenChart(QWidget):
         chart, width, gap = self.chart_geometry()
         position = event.position()
         index = int((position.x() - chart.left()) // (width + gap))
-        if 0 <= index < len(self.months):
+        within_chart = chart.contains(position.toPoint())
+        if within_chart and 0 <= index < len(self.months):
             label, value = self.months[index]
             QToolTip.showText(
                 event.globalPosition().toPoint(),
@@ -375,7 +492,7 @@ class MonthlyTokenChart(QWidget):
             )
         else:
             QToolTip.hideText()
-        super().mouseMoveEvent(event)
+        event.accept()
 
     def leaveEvent(self, event):
         QToolTip.hideText()
@@ -416,6 +533,7 @@ class Dashboard(QMainWindow):
         self.token_history = load_token_history()
         self.revealed_provider_id: str | None = None
         self.settings = QSettings("Utku", "CodexBarLinux")
+        self.providers = load_cached_providers(self.settings)
         saved_theme = str(self.settings.value("theme", "light"))
         self.theme = saved_theme if saved_theme in {"light", "dark"} else "light"
         saved_history_view = str(self.settings.value("token_history_view", "monthly"))
@@ -426,6 +544,8 @@ class Dashboard(QMainWindow):
         self.setMinimumSize(430, 620)
         self.apply_theme()
         self.build_ui()
+        if self.providers:
+            self.show_cached_providers()
         self.refresh()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
@@ -539,14 +659,13 @@ class Dashboard(QMainWindow):
         # Geçici CLI hatasında son başarılı ekranı koru.
         if providers:
             self.providers = providers
-        self.provider_picker.blockSignals(True)
-        self.provider_picker.clear()
-        for provider in self.providers:
-            self.provider_picker.addItem(provider["name"], provider["id"])
-        self.provider_picker.blockSignals(False)
+            save_cached_providers(self.settings, providers)
+        self.populate_provider_picker(current_id)
         if self.providers:
             index = next((i for i, item in enumerate(self.providers) if item["id"] == current_id), 0)
+            self.provider_picker.blockSignals(True)
             self.provider_picker.setCurrentIndex(index)
+            self.provider_picker.blockSignals(False)
             if providers:
                 self.select_provider(index)
             else:
@@ -555,6 +674,28 @@ class Dashboard(QMainWindow):
             self.clear_layout(self.usage_layout)
             self.clear_layout(self.spend_layout)
             self.footer.setText(error or "Gösterilecek sağlayıcı verisi yok.")
+
+    def populate_provider_picker(self, current_id: str = ""):
+        self.provider_picker.blockSignals(True)
+        self.provider_picker.clear()
+        for provider in self.providers:
+            self.provider_picker.addItem(provider["name"], provider["id"])
+        self.provider_picker.blockSignals(False)
+
+    def show_cached_providers(self):
+        """Render cached usage immediately while the first live refresh runs."""
+        current_id = self.current_provider_id()
+        self.populate_provider_picker(current_id)
+        index = next((i for i, item in enumerate(self.providers) if item["id"] == current_id), 0)
+        self.provider_picker.blockSignals(True)
+        self.provider_picker.setCurrentIndex(index)
+        self.provider_picker.blockSignals(False)
+        provider = self.providers[index]
+        self.revealed_provider_id = None
+        self.cost = {}
+        self.render_usage(provider)
+        self.render_spend(provider)
+        self.footer.setText("Son başarılı veri gösteriliyor · Canlı veri yenileniyor…")
 
     def current_provider_id(self) -> str:
         return str(self.provider_picker.currentData() or "")
@@ -616,12 +757,17 @@ class Dashboard(QMainWindow):
         pace.setObjectName("pace")
         pace_layout = QVBoxLayout(pace)
         pace_layout.setContentsMargins(15, 13, 15, 13)
+        pace_layout.setSpacing(3)
         pace_label = QLabel("Kullanım temposu")
         pace_label.setObjectName("paceLabel")
-        pace_text = QLabel(provider["pace"])
+        pace_data = pace_summary(provider.get("windows", []))
+        pace_headline = QLabel(pace_data["headline"])
+        pace_headline.setObjectName("paceHeadline")
+        pace_text = QLabel(pace_data["detail"])
         pace_text.setWordWrap(True)
         pace_text.setObjectName("paceText")
         pace_layout.addWidget(pace_label)
+        pace_layout.addWidget(pace_headline)
         pace_layout.addWidget(pace_text)
         self.usage_layout.addWidget(pace)
         grid = QGridLayout()
@@ -659,9 +805,7 @@ class Dashboard(QMainWindow):
         chart_layout = QVBoxLayout(chart)
         chart_layout.setContentsMargins(15, 13, 15, 13)
         chart_layout.addWidget(QLabel("Günlük maliyet · yerel Codex kayıtları"))
-        daily = self.cost.get("daily") if isinstance(self.cost.get("daily"), list) else []
-        values = [float(day.get("totalCost", 0)) for day in daily if isinstance(day, dict)]
-        chart_layout.addWidget(Sparkline(values))
+        chart_layout.addWidget(Sparkline(extract_daily_costs(self.cost)))
         self.spend_layout.addWidget(chart)
         projects = self.cost.get("projects", [])
         breakdowns = projects[0].get("modelBreakdowns", []) if projects and isinstance(projects[0], dict) else []
@@ -763,7 +907,8 @@ QScrollArea { border:0; background:#f5f7fb; }
 #percentage { background:#e8edff; color:#3449a4; border-radius:7px; padding:4px 8px; font-size:13px; font-weight:800; }
 #reset { color:#68758a; font-size:12px; margin-top:7px; }
 #paceLabel { color:#208353; font-weight:800; }
-#paceText { color:#47705c; font-size:12px; margin-top:4px; }
+#paceHeadline { color:#1b6040; font-size:16px; font-weight:800; }
+#paceText { color:#47705c; font-size:12px; margin-top:2px; }
 #statValue { color:#142033; font-size:19px; font-weight:800; }
 #statLabel { color:#526176; font-size:11px; font-weight:700; }
 #statDetail { color:#8793a5; font-size:10px; }
@@ -818,7 +963,8 @@ QScrollArea { border:0; background:#12151b; }
 #percentage { background:#293657; color:#cbd5ff; border-radius:7px; padding:4px 8px; font-size:13px; font-weight:800; }
 #reset { color:#b5c0d0; font-size:12px; margin-top:7px; }
 #paceLabel { color:#80e0ac; font-weight:800; }
-#paceText { color:#c2d9ca; font-size:12px; margin-top:4px; }
+#paceHeadline { color:#d0f4df; font-size:16px; font-weight:800; }
+#paceText { color:#c2d9ca; font-size:12px; margin-top:2px; }
 #statValue { color:#ffffff; font-size:19px; font-weight:800; }
 #statLabel { color:#bdc7d5; font-size:11px; font-weight:700; }
 #statDetail { color:#9da9ba; font-size:10px; }
