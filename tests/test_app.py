@@ -53,9 +53,14 @@ class AppTests(unittest.TestCase):
         self.assertEqual(app.extract_daily_costs(cost), [("2026-08-22", 0.5), ("2026-08-23", 1.25)])
 
     def test_pace_summary_is_turkish_and_actionable(self):
-        summary = app.pace_summary([{"label": "Oturum", "left": 58, "reset": "2 sa. 14 dk."}])
+        summary = app.pace_summary([{"label": "Oturum", "used": 42, "left": 58, "reset": "2 sa. 14 dk."}])
         self.assertEqual(summary["headline"], "Kullanımın dengeli")
         self.assertEqual(summary["detail"], "Oturum penceresinde %58 kapasite kaldı · Sıfırlanma: 2 sa. 14 dk.")
+
+    def test_pace_summary_distinguishes_exhausted_limit(self):
+        summary = app.pace_summary([{"label": "Oturum", "used": 100, "left": 0, "reset": "30 dk."}])
+        self.assertEqual(summary["headline"], "Limit doldu")
+        self.assertIn("%0 kapasite kaldı", summary["detail"])
 
     def test_pace_summary_handles_missing_windows(self):
         self.assertEqual(app.pace_summary([])["headline"], "Tempo hesaplanamadı")
@@ -88,9 +93,9 @@ class AppTests(unittest.TestCase):
         }}]
         providers, error = app.normalize_providers(payload)
         self.assertIsNone(error)
-        self.assertEqual(providers[0]["windows"][0]["label"], "Weekly")
+        self.assertEqual(providers[0]["windows"][0]["label"], "Haftalık")
         self.assertEqual(providers[0]["windows"][0]["left"], 85)
-        self.assertIn("Aug 27", providers[0]["windows"][0]["reset"])
+        self.assertEqual(providers[0]["windows"][0]["reset"], "27 Ağu 16:39")
 
     def test_absolute_reset_timestamp_uses_local_timezone(self):
         local_tz = timezone(timedelta(hours=3))
@@ -98,6 +103,7 @@ class AppTests(unittest.TestCase):
 
     def test_relative_reset_description_is_preserved(self):
         self.assertIsNone(app.format_reset("2h 14m"))
+        self.assertEqual(app.localize_reset_description("2h 14m"), "2 sa. 14 dk.")
 
     def test_cached_provider_snapshot_round_trip(self):
         class Settings:

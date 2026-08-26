@@ -20,6 +20,10 @@ DEFAULT_CLI = "/home/utkucan/.local/bin/codexbar-0540"
 APP_INSTANCE_NAME = "codexbar-linux-single-instance-v1"
 LOGO_PATH = Path(__file__).parent / "assets" / "codexbar-linux-logo.png"
 MONTH_NAMES = ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
+ENGLISH_MONTHS = {
+    "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+    "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
+}
 CACHED_PROVIDERS_KEY = "cached_providers"
 
 
@@ -78,12 +82,40 @@ def format_reset(value: object, local_tz: tzinfo | None = None) -> str | None:
     return f"{parsed.astimezone(target_tz).day} {MONTH_NAMES[parsed.astimezone(target_tz).month - 1]} {parsed.astimezone(target_tz):%H:%M}"
 
 
+def localize_reset_description(value: object) -> str | None:
+    """Translate common upstream English reset descriptions for the UI."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    duration = text
+    duration = duration.replace("days", "gün").replace("day", "gün")
+    duration = duration.replace("hours", "sa.").replace("hour", "sa.")
+    duration = duration.replace("minutes", "dk.").replace("minute", "dk.")
+    duration = duration.replace("d", " gün").replace("h", " sa.").replace("m", " dk.")
+    if duration != text and any(char.isdigit() for char in text):
+        return " ".join(duration.split())
+
+    parts = text.replace(" at ", " ").split()
+    if len(parts) == 4 and parts[0] in ENGLISH_MONTHS and parts[1].isdigit():
+        clock = parts[2].split(":")
+        if len(clock) == 2 and clock[0].isdigit() and clock[1].isdigit() and parts[3] in {"AM", "PM"}:
+            hour = int(clock[0])
+            minute = int(clock[1])
+            if 1 <= hour <= 12 and 0 <= minute <= 59:
+                if parts[3] == "PM" and hour != 12:
+                    hour += 12
+                if parts[3] == "AM" and hour == 12:
+                    hour = 0
+                return f"{int(parts[1])} {MONTH_NAMES[ENGLISH_MONTHS[parts[0]] - 1]} {hour:02d}:{minute:02d}"
+    return None
+
+
 def window(raw: object, label: str) -> dict | None:
     if not isinstance(raw, dict) or raw.get("usedPercent") is None:
         return None
     used = clamp_percent(raw.get("usedPercent"))
     reset_value = raw.get("resetDescription") or raw.get("resetsAt")
-    reset = format_reset(reset_value) or reset_value or "Reset zamanı bilinmiyor"
+    reset = format_reset(reset_value) or localize_reset_description(reset_value) or reset_value or "Reset zamanı bilinmiyor"
     return {
         "label": label,
         "used": used,
@@ -102,8 +134,11 @@ def pace_summary(windows: list[dict]) -> dict[str, str]:
         }
 
     primary = valid_windows[0]
+    used = clamp_percent(primary.get("used"))
     left = clamp_percent(primary.get("left"))
-    if left >= 70:
+    if used >= 100 or left <= 0:
+        headline = "Limit doldu"
+    elif left >= 70:
         headline = "Rahat ilerliyorsun"
     elif left >= 40:
         headline = "Kullanımın dengeli"
@@ -131,7 +166,7 @@ def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
             continue
         usage = entry.get("usage") if isinstance(entry.get("usage"), dict) else {}
         identity = usage.get("identity") if isinstance(usage.get("identity"), dict) else {}
-        windows = [window(usage.get("primary"), "Session"), window(usage.get("secondary"), "Weekly"), window(usage.get("tertiary"), "Monthly")]
+        windows = [window(usage.get("primary"), "Oturum"), window(usage.get("secondary"), "Haftalık"), window(usage.get("tertiary"), "Aylık")]
         windows = [item for item in windows if item]
         email = usage.get("accountEmail") or identity.get("accountEmail")
         credits = entry.get("credits") if isinstance(entry.get("credits"), dict) else {}
