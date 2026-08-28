@@ -125,30 +125,46 @@ def window(raw: object, label: str) -> dict | None:
 
 
 def pace_summary(windows: list[dict]) -> dict[str, str]:
-    """Build a useful Turkish pace card from stable, provider-independent usage data."""
+    """Explain the current limit state without inventing a usage-rate forecast."""
     valid_windows = [item for item in windows if isinstance(item, dict)] if isinstance(windows, list) else []
     if not valid_windows:
         return {
             "headline": "Tempo hesaplanamadı",
-            "detail": "Kullanım penceresi verisi geldiğinde burada net bir özet göreceksin.",
+            "detail": "Kullanım penceresi verisi geldiğinde kalan kapasiteyi ve sıfırlanma zamanını burada göreceksin.",
+            "guidance": "Sağlayıcı limit bilgisini yenilediğinde durum otomatik yorumlanır.",
+            "method": "Bu özet, mevcut limit verisine dayanır.",
+            "remaining": "—",
+            "reset": "—",
         }
 
     primary = valid_windows[0]
     used = clamp_percent(primary.get("used"))
     left = clamp_percent(primary.get("left"))
+    label = str(primary.get("label", "Aktif"))
+    reset = str(primary.get("reset", "bilinmiyor"))
+    reset_sentence = reset if reset.endswith(".") else f"{reset}."
     if used >= 100 or left <= 0:
-        headline = "Limit doldu"
+        headline = "Kapasite tükendi"
+        guidance = "Bu pencere sıfırlanana kadar yeni yoğun istekler bekletilir."
     elif left >= 70:
-        headline = "Rahat ilerliyorsun"
+        headline = "Kapasite yüksek"
+        guidance = "Kapasitenin büyük bölümü kullanılabilir; mevcut kullanım düzeyi sürdürülebilir."
     elif left >= 40:
-        headline = "Kullanımın dengeli"
+        headline = "Kapasite dengeli"
+        guidance = "Kapasite yeterli düzeyde; planlanan kullanım sürdürülebilir."
     elif left >= 15:
-        headline = "Temponu takip et"
+        headline = "Kapasite azalıyor"
+        guidance = "Kalan alan sınırlanmaya başladı; uzun veya yoğun işleri planlı yürütmek yararlı olur."
     else:
-        headline = "Limit yaklaşıyor"
+        headline = "Kapasite kritik"
+        guidance = "Kapasite kritik düzeyde; kritik olmayan yoğun işleri sıfırlanma sonrasına bırakmak yararlı olur."
     return {
         "headline": headline,
-        "detail": f"{primary.get('label', 'Aktif')} penceresinde %{left:.0f} kapasite kaldı · Sıfırlanma: {primary.get('reset', 'bilinmiyor')}",
+        "detail": f"{label} limitinin %{used:.0f}'si kullanıldı; %{left:.0f} kapasite kaldı. Sıfırlanma: {reset_sentence}",
+        "guidance": guidance,
+        "method": "Bu değerlendirme kullanım hızını tahmin etmez; mevcut kapasiteyi ve sıfırlanma zamanını yorumlar.",
+        "remaining": f"%{left:.0f}",
+        "reset": reset,
     }
 
 
@@ -791,19 +807,66 @@ class Dashboard(QMainWindow):
         pace = QFrame()
         pace.setObjectName("pace")
         pace_layout = QVBoxLayout(pace)
-        pace_layout.setContentsMargins(15, 13, 15, 13)
-        pace_layout.setSpacing(3)
+        pace_layout.setContentsMargins(18, 17, 18, 17)
+        pace_layout.setSpacing(8)
         pace_label = QLabel("Kullanım temposu")
         pace_label.setObjectName("paceLabel")
         pace_data = pace_summary(provider.get("windows", []))
+        pace_header = QHBoxLayout()
+        pace_header.setSpacing(8)
+        pace_context = QLabel("ANLIK DURUM")
+        pace_context.setObjectName("paceContext")
+        pace_status = QLabel(pace_data["headline"])
+        pace_status.setObjectName("paceStatus")
+        pace_header.addWidget(pace_context)
+        pace_header.addStretch()
+        pace_header.addWidget(pace_status)
         pace_headline = QLabel(pace_data["headline"])
         pace_headline.setObjectName("paceHeadline")
         pace_text = QLabel(pace_data["detail"])
         pace_text.setWordWrap(True)
         pace_text.setObjectName("paceText")
+        pace_metrics = QFrame()
+        pace_metrics.setObjectName("paceMetrics")
+        metrics_layout = QHBoxLayout(pace_metrics)
+        metrics_layout.setContentsMargins(13, 11, 13, 11)
+        metrics_layout.setSpacing(12)
+        remaining_caption = QLabel("KALAN KAPASİTE")
+        remaining_caption.setObjectName("paceMetricLabel")
+        remaining_value = QLabel(pace_data["remaining"])
+        remaining_value.setObjectName("paceMetricValue")
+        remaining_column = QVBoxLayout()
+        remaining_column.setSpacing(1)
+        remaining_column.addWidget(remaining_caption)
+        remaining_column.addWidget(remaining_value)
+        divider = QFrame()
+        divider.setObjectName("paceDivider")
+        divider.setFrameShape(QFrame.Shape.VLine)
+        reset_caption = QLabel("SIFIRLANMA")
+        reset_caption.setObjectName("paceMetricLabel")
+        reset_value = QLabel(pace_data["reset"])
+        reset_value.setObjectName("paceMetricValue")
+        reset_value.setWordWrap(True)
+        reset_column = QVBoxLayout()
+        reset_column.setSpacing(1)
+        reset_column.addWidget(reset_caption)
+        reset_column.addWidget(reset_value)
+        metrics_layout.addLayout(remaining_column, 1)
+        metrics_layout.addWidget(divider)
+        metrics_layout.addLayout(reset_column, 1)
+        pace_guidance = QLabel(pace_data["guidance"])
+        pace_guidance.setWordWrap(True)
+        pace_guidance.setObjectName("paceGuidance")
+        pace_method = QLabel(pace_data["method"])
+        pace_method.setWordWrap(True)
+        pace_method.setObjectName("paceMethod")
         pace_layout.addWidget(pace_label)
+        pace_layout.addLayout(pace_header)
         pace_layout.addWidget(pace_headline)
         pace_layout.addWidget(pace_text)
+        pace_layout.addWidget(pace_metrics)
+        pace_layout.addWidget(pace_guidance)
+        pace_layout.addWidget(pace_method)
         self.usage_layout.addWidget(pace)
         grid = QGridLayout()
         credit = "—" if provider["credits"] is None else compact_number(provider["credits"])
@@ -917,7 +980,7 @@ QLabel { background:transparent; }
 #sectionTitle { color:#172236; font-size:16px; font-weight:800; margin-top:6px; }
 #sectionHint { color:#718096; font-size:11px; margin-bottom:1px; }
 #identity { background:#ffffff; border:1px solid #dfe5ee; border-radius:14px; }
-#pace { background:#eefaf4; border:1px solid #c9ebd8; border-radius:12px; }
+#pace { background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #effbf5, stop:1 #e4f5ee); border:1px solid #c4e7d5; border-radius:18px; }
 #chart { background:#ffffff; border:1px solid #dfe5ee; border-radius:12px; }
 #statTile { background:#ffffff; border:1px solid #dfe5ee; border-radius:12px; }
 QComboBox { background:#f8faff; border:1px solid #cfd8e6; border-radius:8px; padding:7px 10px; min-width:190px; color:#172236; }
@@ -941,9 +1004,16 @@ QScrollArea { border:0; background:#f5f7fb; }
 #windowLabel { font-size:15px; color:#1b2a40; font-weight:800; }
 #percentage { background:#e8edff; color:#3449a4; border-radius:7px; padding:4px 8px; font-size:13px; font-weight:800; }
 #reset { color:#68758a; font-size:12px; margin-top:7px; }
-#paceLabel { color:#208353; font-weight:800; }
-#paceHeadline { color:#1b6040; font-size:16px; font-weight:800; }
-#paceText { color:#47705c; font-size:12px; margin-top:2px; }
+#paceLabel { color:#187a4b; font-size:13px; font-weight:800; }
+#paceContext, #paceMetricLabel { color:#5c8170; font-size:10px; font-weight:800; letter-spacing:.7px; }
+#paceStatus { background:#d2f1df; color:#176d42; border-radius:10px; padding:5px 9px; font-size:11px; font-weight:800; }
+#paceHeadline { color:#163f2d; font-size:21px; font-weight:800; letter-spacing:-.3px; }
+#paceText { color:#416b58; font-size:12px; }
+#paceMetrics { background:rgba(255,255,255,.66); border:1px solid #c9e5d5; border-radius:12px; }
+#paceMetricValue { color:#174934; font-size:18px; font-weight:800; }
+#paceDivider { color:#b9ddc8; background:#b9ddc8; max-width:1px; }
+#paceGuidance { color:#245a3f; font-size:12px; font-weight:700; margin-top:2px; }
+#paceMethod { color:#668575; font-size:10px; margin-top:1px; }
 #statValue { color:#142033; font-size:19px; font-weight:800; }
 #statLabel { color:#526176; font-size:11px; font-weight:700; }
 #statDetail { color:#8793a5; font-size:10px; }
@@ -973,7 +1043,7 @@ QLabel { background:transparent; }
 #sectionTitle { color:#f6f8fb; font-size:16px; font-weight:800; margin-top:6px; }
 #sectionHint { color:#aeb8c8; font-size:11px; margin-bottom:1px; }
 #identity { background:#1b2029; border:1px solid #303846; border-radius:14px; }
-#pace { background:#162920; border:1px solid #2e5e49; border-radius:12px; }
+#pace { background:qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #172f24, stop:1 #13271f); border:1px solid #32684f; border-radius:18px; }
 #chart { background:#1b2029; border:1px solid #303846; border-radius:12px; }
 #statTile { background:#1b2029; border:1px solid #303846; border-radius:12px; }
 QComboBox { background:#232a35; border:1px solid #3b4657; border-radius:8px; padding:7px 10px; min-width:190px; color:#f3f5f8; }
@@ -997,9 +1067,16 @@ QScrollArea { border:0; background:#12151b; }
 #windowLabel { font-size:15px; color:#f5f7fb; font-weight:800; }
 #percentage { background:#293657; color:#cbd5ff; border-radius:7px; padding:4px 8px; font-size:13px; font-weight:800; }
 #reset { color:#b5c0d0; font-size:12px; margin-top:7px; }
-#paceLabel { color:#80e0ac; font-weight:800; }
-#paceHeadline { color:#d0f4df; font-size:16px; font-weight:800; }
-#paceText { color:#c2d9ca; font-size:12px; margin-top:2px; }
+#paceLabel { color:#83e5af; font-size:13px; font-weight:800; }
+#paceContext, #paceMetricLabel { color:#9bcbae; font-size:10px; font-weight:800; letter-spacing:.7px; }
+#paceStatus { background:#24583f; color:#c5f7d9; border-radius:10px; padding:5px 9px; font-size:11px; font-weight:800; }
+#paceHeadline { color:#e1f8ea; font-size:21px; font-weight:800; letter-spacing:-.3px; }
+#paceText { color:#bddbc9; font-size:12px; }
+#paceMetrics { background:rgba(11,30,21,.52); border:1px solid #34684f; border-radius:12px; }
+#paceMetricValue { color:#ddf6e6; font-size:18px; font-weight:800; }
+#paceDivider { color:#397458; background:#397458; max-width:1px; }
+#paceGuidance { color:#d3f1df; font-size:12px; font-weight:700; margin-top:2px; }
+#paceMethod { color:#9fc4ad; font-size:10px; margin-top:1px; }
 #statValue { color:#ffffff; font-size:19px; font-weight:800; }
 #statLabel { color:#bdc7d5; font-size:11px; font-weight:700; }
 #statDetail { color:#9da9ba; font-size:10px; }

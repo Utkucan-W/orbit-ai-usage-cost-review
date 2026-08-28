@@ -54,17 +54,27 @@ class AppTests(unittest.TestCase):
 
     def test_pace_summary_is_turkish_and_actionable(self):
         summary = app.pace_summary([{"label": "Oturum", "used": 42, "left": 58, "reset": "2 sa. 14 dk."}])
-        self.assertEqual(summary["headline"], "Kullanımın dengeli")
-        self.assertEqual(summary["detail"], "Oturum penceresinde %58 kapasite kaldı · Sıfırlanma: 2 sa. 14 dk.")
+        self.assertEqual(summary["headline"], "Kapasite dengeli")
+        self.assertEqual(summary["detail"], "Oturum limitinin %42'si kullanıldı; %58 kapasite kaldı. Sıfırlanma: 2 sa. 14 dk.")
+        self.assertIn("planlanan kullanım sürdürülebilir", summary["guidance"])
+        self.assertIn("kullanım hızını tahmin etmez", summary["method"])
+        self.assertEqual(summary["remaining"], "%58")
+        self.assertEqual(summary["reset"], "2 sa. 14 dk.")
 
     def test_pace_summary_distinguishes_exhausted_limit(self):
         summary = app.pace_summary([{"label": "Oturum", "used": 100, "left": 0, "reset": "30 dk."}])
-        self.assertEqual(summary["headline"], "Limit doldu")
+        self.assertEqual(summary["headline"], "Kapasite tükendi")
         self.assertIn("%0 kapasite kaldı", summary["detail"])
+        self.assertIn("sıfırlanana kadar", summary["guidance"])
 
     def test_pace_summary_handles_missing_windows(self):
         self.assertEqual(app.pace_summary([])["headline"], "Tempo hesaplanamadı")
         self.assertEqual(app.pace_summary({})["headline"], "Tempo hesaplanamadı")
+
+    def test_pace_summary_warns_before_the_limit_is_exhausted(self):
+        summary = app.pace_summary([{"label": "Haftalık", "used": 91, "left": 9, "reset": "3 gün"}])
+        self.assertEqual(summary["headline"], "Kapasite kritik")
+        self.assertIn("yoğun işleri", summary["guidance"])
 
     def test_token_history_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
