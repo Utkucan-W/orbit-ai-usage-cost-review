@@ -1,7 +1,7 @@
-# CodexBar Linux
+# Orbit
 
-steipete/CodexBar'ın Linux/KDE için bağımsız arayüz prototipi. Upstream
-`codexbar` CLI'yı veri kaynağı olarak kullanır; provider kimlik bilgilerine
+Linux/KDE için bağımsız AI kullanım ve maliyet panosu. Upstream `codexbar` CLI'yı
+veri kaynağı olarak kullanır; provider kimlik bilgilerine
 dokunmaz.
 
 ## Çalıştırma
@@ -36,7 +36,7 @@ python3 app.py --fixture tests/fixtures/usage.json
   365 gün tutulur; aylık grafik ve her kayıt günü için token satırı gösterilir.
 - Uygulama aynı anda yalnızca bir kez açılır; ikinci başlatma, yeni pencere veya
   tepsi ikonu oluşturmadan sonlanır.
-- `assets/codexbar-linux-logo.png` özgün uygulama logosudur; pencere ve sistem
+- `assets/orbit-logo.png` özgün Orbit logosudur; pencere ve sistem
   tepsisinde kullanılır.
 - Sistem tepsisi menüsü ve 60 saniyelik otomatik yenileme.
 - Upstream CLI'dan gelen gerçek kullanım ve yerel maliyet verisi.

@@ -17,8 +17,16 @@ from PyQt6.QtWidgets import (
 
 
 DEFAULT_CLI = "/home/utkucan/.local/bin/codexbar-0540"
+# Keep the shared-memory name stable so an already-running pre-Orbit build
+# still prevents a duplicate tray process during the rebrand transition.
 APP_INSTANCE_NAME = "codexbar-linux-single-instance-v1"
-LOGO_PATH = Path(__file__).parent / "assets" / "codexbar-linux-logo.png"
+APP_NAME = "Orbit"
+SETTINGS_ORGANIZATION = "Utku"
+SETTINGS_APPLICATION = "Orbit"
+LEGACY_SETTINGS_APPLICATION = "CodexBarLinux"
+APP_DATA_DIRECTORY = "Orbit"
+LEGACY_APP_DATA_DIRECTORY = "CodexBarLinux"
+LOGO_PATH = Path(__file__).parent / "assets" / "orbit-logo.png"
 MONTH_NAMES = ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
 ENGLISH_MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -261,16 +269,27 @@ def token_count(value: object) -> str:
 
 def app_data_path() -> Path:
     location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
-    return Path(location) / "CodexBarLinux" / "token-history.json"
+    return Path(location) / APP_DATA_DIRECTORY / "token-history.json"
 
 
-def load_token_history(path: Path | None = None) -> dict[str, int]:
+def legacy_app_data_path() -> Path:
+    location = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation)
+    return Path(location) / LEGACY_APP_DATA_DIRECTORY / "token-history.json"
+
+
+def read_token_history_file(path: Path) -> dict[str, int]:
     try:
-        payload = json.loads((path or app_data_path()).read_text())
+        payload = json.loads(path.read_text())
         days = payload.get("days", {}) if isinstance(payload, dict) else {}
         return {key: int(value) for key, value in days.items() if isinstance(key, str) and numeric_value(value) is not None}
     except (OSError, json.JSONDecodeError, ValueError, TypeError):
         return {}
+
+
+def load_token_history(path: Path | None = None) -> dict[str, int]:
+    if path:
+        return read_token_history_file(path)
+    return read_token_history_file(app_data_path()) or read_token_history_file(legacy_app_data_path())
 
 
 def save_token_history(days: dict[str, int], path: Path | None = None) -> None:
@@ -583,13 +602,14 @@ class Dashboard(QMainWindow):
         self.cost: dict = {}
         self.token_history = load_token_history()
         self.revealed_provider_id: str | None = None
-        self.settings = QSettings("Utku", "CodexBarLinux")
+        self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
+        self.migrate_legacy_settings()
         self.providers = load_cached_providers(self.settings)
         saved_theme = str(self.settings.value("theme", "light"))
         self.theme = saved_theme if saved_theme in {"light", "dark"} else "light"
         saved_history_view = str(self.settings.value("token_history_view", "monthly"))
         self.token_history_view = saved_history_view if saved_history_view in {"monthly", "daily"} else "monthly"
-        self.setWindowTitle("CodexBar Linux")
+        self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
         self.resize(500, 760)
         self.setMinimumSize(430, 620)
@@ -617,7 +637,7 @@ class Dashboard(QMainWindow):
             logo.setPixmap(logo_pixmap.scaled(34, 34, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         logo.setFixedSize(34, 34)
         brand_text = QVBoxLayout()
-        title = QLabel("CodexBar")
+        title = QLabel(APP_NAME)
         title.setObjectName("title")
         subtitle = QLabel("AI kullanım ve maliyet özeti")
         subtitle.setObjectName("subtitle")
@@ -665,6 +685,13 @@ class Dashboard(QMainWindow):
         self.setStyleSheet(style_for_theme(self.theme))
         if hasattr(self, "theme_button"):
             self.update_theme_button()
+
+    def migrate_legacy_settings(self):
+        """Copy only user preferences that Orbit has not set yet."""
+        legacy = QSettings(SETTINGS_ORGANIZATION, LEGACY_SETTINGS_APPLICATION)
+        for key in (CACHED_PROVIDERS_KEY, "theme", "token_history_view"):
+            if not self.settings.contains(key) and legacy.contains(key):
+                self.settings.setValue(key, legacy.value(key))
 
     def update_theme_button(self):
         is_dark = self.theme == "dark"
@@ -1100,7 +1127,7 @@ def style_for_theme(theme: str) -> str:
 
 
 def acquire_single_instance() -> QSharedMemory | None:
-    """Return a process-held guard, or None if CodexBar is already running."""
+    """Return a process-held guard, or None if Orbit is already running."""
     guard = QSharedMemory(APP_INSTANCE_NAME)
     return guard if guard.create(1) else None
 
@@ -1119,7 +1146,7 @@ def make_tray(window: Dashboard) -> QSystemTrayIcon:
         icon = QIcon(pixmap)
     tray = QSystemTrayIcon(icon, window)
     menu = QMenu()
-    show = QAction("CodexBar Linux'ı aç", menu)
+    show = QAction("Orbit'i aç", menu)
     show.triggered.connect(lambda: (window.show(), window.raise_(), window.activateWindow()))
     menu.addAction(show)
     menu.addAction("Yenile", window.refresh)
@@ -1140,7 +1167,7 @@ def main():
     app.setQuitOnLastWindowClosed(False)
     instance_guard = acquire_single_instance()
     if instance_guard is None:
-        print("CodexBar zaten arka planda çalışıyor.")
+        print("Orbit zaten arka planda çalışıyor.")
         return
     window = Dashboard(args.cli, args.fixture)
     tray = make_tray(window)

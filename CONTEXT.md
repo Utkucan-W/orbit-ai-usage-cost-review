@@ -1,10 +1,10 @@
-# CodexBar Linux — Context
+# Orbit — Context
 
 ## Amaç
 
-steipete/CodexBar'ın macOS menü çubuğu deneyimini Linux/KDE için bağımsız bir
-PyQt6 arayüzüyle sunmak. Veri kaynağı upstream `codexbar` CLI'dır; bu proje
-provider API'larını yeniden uygulamaz.
+Linux/KDE için bağımsız bir PyQt6 AI kullanım ve maliyet panosu sunmak. Veri
+kaynağı upstream `codexbar` CLI'dır; Orbit provider API'larını yeniden
+uygulamaz.
 
 ## MVP sınırı
 

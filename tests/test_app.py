@@ -8,6 +8,12 @@ import app
 
 
 class AppTests(unittest.TestCase):
+    def test_orbit_brand_identity_is_consistent(self):
+        self.assertEqual(app.APP_NAME, "Orbit")
+        self.assertEqual(app.SETTINGS_APPLICATION, "Orbit")
+        self.assertEqual(app.APP_DATA_DIRECTORY, "Orbit")
+        self.assertEqual(app.LOGO_PATH.name, "orbit-logo.png")
+
     def test_mask_email(self):
         self.assertEqual(app.mask_email("utkucan@example.com"), "ut•••••@example.com")
         self.assertEqual(app.mask_email("Bağlı hesap"), "Bağlı hesap")
@@ -81,6 +87,20 @@ class AppTests(unittest.TestCase):
             path = Path(tmp) / "token-history.json"
             app.save_token_history({"2026-08-23": 42}, path)
             self.assertEqual(app.load_token_history(path), {"2026-08-23": 42})
+
+    def test_token_history_uses_legacy_file_when_orbit_history_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            orbit = Path(tmp) / "Orbit" / "token-history.json"
+            legacy = Path(tmp) / "CodexBarLinux" / "token-history.json"
+            legacy.parent.mkdir(parents=True)
+            legacy.write_text(json.dumps({"days": {"2026-08-23": 77}}))
+            original_orbit, original_legacy = app.app_data_path, app.legacy_app_data_path
+            try:
+                app.app_data_path = lambda: orbit
+                app.legacy_app_data_path = lambda: legacy
+                self.assertEqual(app.load_token_history(), {"2026-08-23": 77})
+            finally:
+                app.app_data_path, app.legacy_app_data_path = original_orbit, original_legacy
 
     def test_normalize_provider_payload(self):
         providers, error = app.normalize_providers([{"provider":"Codex", "usage":{"primary":{"usedPercent":120}}}])
