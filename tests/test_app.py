@@ -155,6 +155,17 @@ class AppTests(unittest.TestCase):
             self.assertIn("#heroCard", style)
             self.assertIn("QWidget { background:transparent;", style)
 
+    def test_daily_chart_labels_shrink_to_fit_their_column(self):
+        """A month of daily columns is a few pixels wide each; the raw ISO date
+        the rows carry printed one smear of overlapping text."""
+        self.addCleanup(app.set_language, "tr")
+        app.set_language("en")
+        self.assertEqual(app.chart_column_label("2026-08-04"), "4 Aug")
+        # Monthly rows already arrive short and must survive untouched.
+        self.assertEqual(app.chart_column_label("Sep 26"), "Sep")
+        app.set_language("tr")
+        self.assertEqual(app.chart_column_label("2026-08-04"), "4 Ağu")
+
     def test_pace_state_bands_cover_the_whole_range(self):
         """The card used to be green in the stylesheet regardless of the number
         next to it; the bands are what make it amber and red."""

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -38,6 +39,8 @@ LOGO_PATH = Path(__file__).parent / "assets" / "orbit-logo.png"
 LANGUAGE_KEY = "language"
 DEFAULT_LANGUAGE = "tr"
 SUPPORTED_LANGUAGES = ("tr", "en")
+# Widest a column label needs before neighbouring labels start to touch.
+LABEL_MIN_WIDTH = 46
 MONTH_NAMES_BY_LANGUAGE = {
     "tr": ("Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"),
     "en": ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"),
@@ -1024,6 +1027,16 @@ class ShareBar(QWidget):
         super().leaveEvent(event)
 
 
+def chart_column_label(label: str) -> str:
+    """Monthly rows arrive as "Sep 26"; daily rows arrive as a raw ISO date,
+    which is several times wider than the column it sits under."""
+    try:
+        parsed = date.fromisoformat(label)
+    except ValueError:
+        return label.split()[0]
+    return f"{parsed.day} {month_names()[parsed.month - 1]}"
+
+
 class StackedTokenChart(QWidget):
     """Columns stack the providers; hovering a column explains who spent what."""
 
@@ -1046,6 +1059,11 @@ class StackedTokenChart(QWidget):
         chart, width, gap = self.chart_geometry()
         maximum = max((sum(entries.values()) for _, entries in self.rows), default=0) or 1
         painter.setFont(QFont("Fira Sans", 8))
+        # A month of daily columns is a few pixels wide each; labelling every one
+        # produces an unreadable smear, so only every nth column is named,
+        # counted from the right so the newest column always keeps its label.
+        step = max(1, math.ceil(LABEL_MIN_WIDTH / (width + gap)))
+        last = len(self.rows) - 1
         for index, (label, entries) in enumerate(self.rows):
             x = round(chart.left() + index * (width + gap))
             total = sum(entries.values())
@@ -1060,8 +1078,11 @@ class StackedTokenChart(QWidget):
                 painter.setBrush(QColor(self.colors.get(provider_id, "#888888")))
                 painter.drawRoundedRect(x, bottom - height, round(width), height, 3, 3)
                 bottom -= height
-            painter.setPen(QColor(self.empty_track).darker(160) if total else QColor(self.empty_track))
-            painter.drawText(x - 7, self.height() - 21, round(width) + 14, 14, Qt.AlignmentFlag.AlignCenter, label.split()[0])
+            if (last - index) % step == 0:
+                painter.setPen(QColor(self.empty_track).darker(160) if total else QColor(self.empty_track))
+                box = max(round(width) + 14, LABEL_MIN_WIDTH)
+                painter.drawText(round(x + width / 2 - box / 2), self.height() - 21, box, 14,
+                                 Qt.AlignmentFlag.AlignCenter, chart_column_label(label))
             painter.setPen(Qt.PenStyle.NoPen)
 
     def mouseMoveEvent(self, event):
