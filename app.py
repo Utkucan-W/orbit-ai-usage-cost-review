@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone, tzinfo
@@ -18,12 +19,17 @@ from PyQt6.QtWidgets import (
 )
 
 
-DEFAULT_CLI = "/home/utkucan/.local/bin/codexbar-0540"
+# The upstream CLI is looked up at runtime; nothing here may assume a
+# particular home directory or install prefix.
+CLI_NAMES = ("codexbar-0540", "codexbar")
 # Keep the shared-memory name stable so an already-running pre-Orbit build
 # still prevents a duplicate tray process during the rebrand transition.
 APP_INSTANCE_NAME = "codexbar-linux-single-instance-v1"
 APP_NAME = "Orbit"
-SETTINGS_ORGANIZATION = "Utku"
+SETTINGS_ORGANIZATION = "Orbit"
+# Older builds filed preferences under the author's own name; read once, then
+# never written to again.
+LEGACY_SETTINGS_ORGANIZATIONS = ("Utku",)
 SETTINGS_APPLICATION = "Orbit"
 LEGACY_SETTINGS_APPLICATION = "CodexBarLinux"
 APP_DATA_DIRECTORY = "Orbit"
@@ -329,8 +335,21 @@ PACE_PALETTE = {
 
 
 def cli_path() -> str:
-    candidates = [DEFAULT_CLI, "/usr/bin/codexbar", "codexbar"]
-    return next((path for path in candidates if os.path.isabs(path) and os.access(path, os.X_OK)), "codexbar")
+    """Locate the upstream CodexBar CLI without hard-coding an install path.
+
+    A versioned wrapper wins over the bare name: the JSON shape Orbit reads was
+    stable from 0.54 on. ``--cli`` overrides all of this; the search only picks
+    the default.
+    """
+    local_bin = Path.home() / ".local" / "bin"
+    for name in CLI_NAMES:
+        candidate = local_bin / name
+        if os.access(candidate, os.X_OK):
+            return str(candidate)
+        found = shutil.which(name)
+        if found:
+            return found
+    return CLI_NAMES[-1]
 
 
 def run_json(command: str, arguments: list[str]) -> tuple[object | None, str | None]:
@@ -609,9 +628,20 @@ def save_cached_providers(settings: QSettings, providers: list[dict]) -> None:
     settings.setValue(CACHED_PROVIDERS_KEY, json.dumps(providers, ensure_ascii=False))
 
 
+def legacy_settings_sources() -> list[QSettings]:
+    """Every place a previous build may have stored preferences, newest first."""
+    pairs = [
+        (org, name)
+        for org in (SETTINGS_ORGANIZATION, *LEGACY_SETTINGS_ORGANIZATIONS)
+        for name in (SETTINGS_APPLICATION, LEGACY_SETTINGS_APPLICATION)
+    ]
+    return [QSettings(org, name) for org, name in pairs
+            if (org, name) != (SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)]
+
+
 def migrate_legacy_settings(settings: QSettings, legacy: QSettings) -> None:
     """Copy only user preferences that Orbit has not set yet."""
-    for key in (CACHED_PROVIDERS_KEY, "theme", "token_history_view"):
+    for key in (CACHED_PROVIDERS_KEY, "theme", "token_history_view", LANGUAGE_KEY):
         if not settings.contains(key) and legacy.contains(key):
             settings.setValue(key, legacy.value(key))
 
@@ -1263,10 +1293,8 @@ class Dashboard(QMainWindow):
         self.token_history = load_token_history()
         self.revealed_provider_id: str | None = None
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
-        migrate_legacy_settings(
-            self.settings,
-            QSettings(SETTINGS_ORGANIZATION, LEGACY_SETTINGS_APPLICATION),
-        )
+        for legacy in legacy_settings_sources():
+            migrate_legacy_settings(self.settings, legacy)
         self.providers = load_cached_providers(self.settings)
         self.language = set_language(self.settings.value(LANGUAGE_KEY, DEFAULT_LANGUAGE))
         saved_theme = str(self.settings.value("theme", "light"))

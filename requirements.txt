@@ -1,0 +1,2 @@
+# Orbit is a single-file PyQt6 application; this is the whole dependency list.
+PyQt6>=6.6

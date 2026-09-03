@@ -1,2 +1,7 @@
 __pycache__/
 *.py[cod]
+
+# Local agent/session scratch that is not part of the application.
+CURRENT-STATE.md
+.agents/
+.codex/
