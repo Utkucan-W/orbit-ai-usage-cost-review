@@ -478,9 +478,9 @@ def pace_state(used: float, left: float) -> str:
         return "exhausted"
     if left >= 70:
         return "high"
-    if left >= 40:
+    if left >= 50:
         return "balanced"
-    if left >= 15:
+    if left >= 25:
         return "declining"
     return "critical"
 

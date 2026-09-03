@@ -160,9 +160,18 @@ class AppTests(unittest.TestCase):
         next to it; the bands are what make it amber and red."""
         self.assertEqual(app.pace_state(5, 95), "high")
         self.assertEqual(app.pace_state(45, 55), "balanced")
-        self.assertEqual(app.pace_state(75, 25), "declining")
+        self.assertEqual(app.pace_state(65, 35), "declining")
         self.assertEqual(app.pace_state(95, 5), "critical")
         self.assertEqual(app.pace_state(100, 0), "exhausted")
+
+    def test_amber_runs_from_50_down_to_25(self):
+        """Utku set these edges: green above 50% left, amber down to 25%, red
+        below it. Both boundaries belong to the calmer band."""
+        green = ("high", "balanced")
+        self.assertIn(app.pace_state(50, 50), green)
+        self.assertEqual(app.pace_state(51, 49), "declining")
+        self.assertEqual(app.pace_state(75, 25), "declining")
+        self.assertEqual(app.pace_state(76, 24), "critical")
 
     def test_pace_styles_are_generated_per_state(self):
         for theme in ("light", "dark"):
