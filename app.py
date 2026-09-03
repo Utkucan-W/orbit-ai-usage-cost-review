@@ -3,12 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
-from PyQt6.QtCore import QSettings, QSharedMemory, QStandardPaths, Qt, QTimer
+from PyQt6.QtCore import QObject, QSettings, QSharedMemory, QStandardPaths, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel,
@@ -91,6 +92,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "pace.method": "Bu değerlendirme kullanım hızını tahmin etmez; mevcut kapasiteyi ve sıfırlanma zamanını yorumlar.",
         "pace.unknownReset": "bilinmiyor",
         "pace.activeWindow": "Aktif",
+        "plan.connected": "Bağlı",
+        "plan.chatgpt": "ChatGPT",
+        "plan.apiKey": "API anahtarı",
+        "plan.claudeAi": "Claude hesabı",
+        "plan.subscription": "Abonelik",
         "combined.captionAll": "BİRLEŞİK TOKEN · {scope}",
         "combined.captionOne": "TOPLAM TOKEN · {scope}",
         "combined.unit": "token",
@@ -180,6 +186,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "pace.method": "This reading does not forecast a consumption rate; it interprets current capacity and reset time.",
         "pace.unknownReset": "unknown",
         "pace.activeWindow": "Active",
+        "plan.connected": "Connected",
+        "plan.chatgpt": "ChatGPT",
+        "plan.apiKey": "API key",
+        "plan.claudeAi": "Claude account",
+        "plan.subscription": "Subscription",
         "combined.captionAll": "COMBINED TOKENS · {scope}",
         "combined.captionOne": "TOTAL TOKENS · {scope}",
         "combined.unit": "tokens",
@@ -271,6 +282,17 @@ UNKNOWN_PROVIDER = "bilinmeyen"
 
 # Same oklch lightness and chroma, hue apart: the warm/cool split survives
 # greyscale and colour-vision deficiency, so the breakdown never depends on hue alone.
+LOGIN_METHOD_KEYS = {
+    "connected": "plan.connected",
+    "chatgpt": "plan.chatgpt",
+    "chat_gpt": "plan.chatgpt",
+    "api_key": "plan.apiKey",
+    "apikey": "plan.apiKey",
+    "claude_ai": "plan.claudeAi",
+    "claude_account": "plan.claudeAi",
+    "subscription": "plan.subscription",
+}
+
 PROVIDER_PALETTE = {
     "codex": {"dark": "#25c2c2", "light": "#009192"},
     "claude": {"dark": "#e99169", "light": "#b85e31"},
@@ -282,6 +304,29 @@ EXTRA_PALETTE = (
     {"dark": "#83e5af", "light": "#1c7f52"},
 )
 
+# The current-state card is the one surface whose colour carries meaning, so it
+# gets its own palette: green while there is room, amber while it tightens, red
+# once it is nearly or fully gone. "tint" is the rgb triple the generated
+# stylesheet fades into backgrounds and borders.
+PACE_PALETTE = {
+    "light": {
+        "unknown":   {"tint": "108, 122, 143", "accent": "#5c6a80", "chip": "#3d4759", "heading": "#1f2937", "body": "#4a5568", "muted": "#78849a"},
+        "high":      {"tint": "28, 127, 82",   "accent": "#1c7f52", "chip": "#146042", "heading": "#123c2b", "body": "#2f5b46", "muted": "#6f9182"},
+        "balanced":  {"tint": "28, 127, 82",   "accent": "#1c7f52", "chip": "#146042", "heading": "#123c2b", "body": "#2f5b46", "muted": "#6f9182"},
+        "declining": {"tint": "176, 110, 10",  "accent": "#b06e0a", "chip": "#8a5407", "heading": "#4a3005", "body": "#6f4a10", "muted": "#9a7a45"},
+        "critical":  {"tint": "185, 47, 47",   "accent": "#b92f2f", "chip": "#8f2222", "heading": "#4d1414", "body": "#7a2a2a", "muted": "#a56a6a"},
+        "exhausted": {"tint": "150, 26, 26",   "accent": "#961a1a", "chip": "#761212", "heading": "#3d0e0e", "body": "#6a2020", "muted": "#9a6060"},
+    },
+    "dark": {
+        "unknown":   {"tint": "125, 135, 152", "accent": "#9aa6ba", "chip": "#c3ccdb", "heading": "#e8edf5", "body": "#b3bccb", "muted": "#87919f"},
+        "high":      {"tint": "88, 214, 150",  "accent": "#58d696", "chip": "#8ff0bb", "heading": "#e6faef", "body": "#b6d8c6", "muted": "#7e9c8b"},
+        "balanced":  {"tint": "88, 214, 150",  "accent": "#58d696", "chip": "#8ff0bb", "heading": "#e6faef", "body": "#b6d8c6", "muted": "#7e9c8b"},
+        "declining": {"tint": "233, 178, 74",  "accent": "#e9b24a", "chip": "#f7d493", "heading": "#fdf3e2", "body": "#dcc6a0", "muted": "#a3906f"},
+        "critical":  {"tint": "240, 113, 103", "accent": "#f07167", "chip": "#ffb3ab", "heading": "#ffeceb", "body": "#e0bcb8", "muted": "#a88a86"},
+        "exhausted": {"tint": "232, 84, 74",   "accent": "#e8544a", "chip": "#ff9d95", "heading": "#ffe4e2", "body": "#d9b0ac", "muted": "#a5807c"},
+    },
+}
+
 
 def cli_path() -> str:
     candidates = [DEFAULT_CLI, "/usr/bin/codexbar", "codexbar"]
@@ -290,7 +335,7 @@ def cli_path() -> str:
 
 def run_json(command: str, arguments: list[str]) -> tuple[object | None, str | None]:
     try:
-        result = subprocess.run([command, *arguments], capture_output=True, text=True, timeout=25, check=False)
+        result = subprocess.run([command, *arguments], capture_output=True, text=True, timeout=60, check=False)
     except subprocess.TimeoutExpired:
         return None, t("error.timeout")
     except OSError as exc:
@@ -351,19 +396,33 @@ def format_reset(value: object, local_tz: tzinfo | None = None) -> str | None:
     return f"{parsed.astimezone(target_tz).day} {month_names()[parsed.astimezone(target_tz).month - 1]} {parsed.astimezone(target_tz):%H:%M}"
 
 
+# A relative duration is a run of "<number><unit>" tokens and nothing else.
+# Replacing bare d/h/m letters anywhere in the string turned Claude's
+# "Resets 2:30pm (Europe/Istanbul)" into "Resets 2:30p dk. (Europe/Istanbul)",
+# so the unit only counts when a number sits in front of it.
+DURATION_TOKEN = re.compile(r"(\d+)\s*(days?|hours?|minutes?|[dhm])\b", re.IGNORECASE)
+DURATION_UNITS_TR = {
+    "d": "gün", "day": "gün", "days": "gün",
+    "h": "sa.", "hour": "sa.", "hours": "sa.",
+    "m": "dk.", "minute": "dk.", "minutes": "dk.",
+}
+
+
+def turkish_duration(match: re.Match[str]) -> str:
+    return f"{match.group(1)} {DURATION_UNITS_TR[match.group(2).lower()]}"
+
+
 def localize_reset_description(value: object) -> str | None:
     """Translate common upstream English reset descriptions for the UI."""
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
     if current_language() == "tr":
-        duration = text
-        duration = duration.replace("days", "gün").replace("day", "gün")
-        duration = duration.replace("hours", "sa.").replace("hour", "sa.")
-        duration = duration.replace("minutes", "dk.").replace("minute", "dk.")
-        duration = duration.replace("d", " gün").replace("h", " sa.").replace("m", " dk.")
-        if duration != text and any(char.isdigit() for char in text):
-            return " ".join(duration.split())
+        rewritten, count = DURATION_TOKEN.subn(turkish_duration, text)
+        # Only a string that is *nothing but* duration tokens is rewritten;
+        # clock times and timezone names keep their upstream form.
+        if count and not DURATION_TOKEN.sub("", text).strip(" ,"):
+            return " ".join(rewritten.split())
 
     parts = text.replace(" at ", " ").split()
     if len(parts) == 4 and parts[0] in ENGLISH_MONTHS and parts[1].isdigit():
@@ -384,7 +443,11 @@ def window(raw: object, label: str) -> dict | None:
     if not isinstance(raw, dict) or raw.get("usedPercent") is None:
         return None
     used = clamp_percent(raw.get("usedPercent"))
-    reset_value = raw.get("resetDescription") or raw.get("resetsAt")
+    # An absolute timestamp survives translation and renders in local time; the
+    # upstream description is free-form prose only some providers write in a
+    # shape this UI can parse, so it is the fallback rather than the source.
+    absolute = raw.get("resetsAt")
+    reset_value = absolute if format_reset(absolute) else (raw.get("resetDescription") or absolute)
     return {
         "label": label,
         # Stored raw: the reset text is language-dependent, so formatting it at
@@ -404,6 +467,29 @@ def reset_text(data: dict) -> str:
     return format_reset(raw) or localize_reset_description(raw) or (str(raw) if raw else "") or t("usage.resetUnknown")
 
 
+def pace_state(used: float, left: float) -> str:
+    """The single source of the green/amber/red bands: the card chrome, the
+    chip and every provider bar read their colour from this state.
+
+    ``left`` decides the band and ``used`` only settles the exhausted case, so
+    a payload whose two numbers disagree is read as "how much is left".
+    """
+    if used >= 100 or left <= 0:
+        return "exhausted"
+    if left >= 70:
+        return "high"
+    if left >= 40:
+        return "balanced"
+    if left >= 15:
+        return "declining"
+    return "critical"
+
+
+def pace_color(state: str, theme: str) -> str:
+    tones = PACE_PALETTE["dark" if theme == "dark" else "light"]
+    return tones.get(state, tones["unknown"])["accent"]
+
+
 def pace_summary(windows: list[dict]) -> dict[str, str]:
     """Explain the current limit state without inventing a usage-rate forecast."""
     valid_windows = [item for item in windows if isinstance(item, dict)] if isinstance(windows, list) else []
@@ -415,6 +501,7 @@ def pace_summary(windows: list[dict]) -> dict[str, str]:
             "method": t("pace.unknown.method"),
             "remaining": "—",
             "reset": "—",
+            "state": "unknown",
         }
 
     primary = valid_windows[0]
@@ -424,16 +511,7 @@ def pace_summary(windows: list[dict]) -> dict[str, str]:
     label = t(str(raw_label))
     reset = reset_text(primary)
     reset_sentence = reset if reset.endswith(".") else f"{reset}."
-    if used >= 100 or left <= 0:
-        state = "exhausted"
-    elif left >= 70:
-        state = "high"
-    elif left >= 40:
-        state = "balanced"
-    elif left >= 15:
-        state = "declining"
-    else:
-        state = "critical"
+    state = pace_state(used, left)
     return {
         "headline": t(f"pace.{state}.headline"),
         "detail": t("pace.detail", label=label, used=f"{used:.0f}", left=f"{left:.0f}", reset=reset_sentence),
@@ -441,6 +519,7 @@ def pace_summary(windows: list[dict]) -> dict[str, str]:
         "method": t("pace.method"),
         "remaining": f"%{left:.0f}" if current_language() == "tr" else f"{left:.0f}%",
         "reset": reset,
+        "state": state,
     }
 
 
@@ -452,6 +531,29 @@ def narrowest_window(providers: list[dict]) -> list[dict]:
             if isinstance(item, dict):
                 windows.append(dict(item, label=f"{provider.get('name') or t('provider.generic')} · {t(item.get('label') or 'window.generic')}"))
     return sorted(windows, key=lambda item: clamp_percent(item.get("left")))
+
+
+def provider_pace_rows(providers: list[dict]) -> list[dict]:
+    """One row per provider, each showing that provider's own tightest window.
+    narrowest_window() collapses everything to a single governing window, which
+    hides every other provider while the combined scope is selected."""
+    rows = []
+    for provider in providers:
+        windows = [item for item in provider.get("windows", []) if isinstance(item, dict)]
+        if not windows:
+            continue
+        tightest = min(windows, key=lambda item: clamp_percent(item.get("left")))
+        left = clamp_percent(tightest.get("left"))
+        used = clamp_percent(tightest.get("used")) if tightest.get("used") is not None else 100 - left
+        rows.append({
+            "id": provider.get("id", ""),
+            "name": provider.get("name") or t("provider.generic"),
+            "label": t(str(tightest.get("label") or "window.generic")),
+            "left": left,
+            "reset": reset_text(tightest),
+            "state": pace_state(used, left),
+        })
+    return sorted(rows, key=lambda row: row["left"])
 
 
 def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
@@ -481,7 +583,9 @@ def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
             "name": str(entry.get("name") or entry.get("provider") or "Provider").title(),
             "source": entry.get("source") or "local",
             "email": email or t("account.fallback"),
-            "plan": usage.get("loginMethod", "connected").replace("_", " ").title(),
+            # Stored raw for the same reason the reset text is: the label is
+            # language-dependent and the render pass decides how it reads.
+            "plan": str(usage.get("loginMethod") or "connected"),
             "windows": windows,
             "credits": credits.get("remaining"),
             "credit_unit": credits.get("unit") or "credits",
@@ -556,6 +660,16 @@ def provider_label(provider_id: str) -> str:
     if provider_id == UNKNOWN_PROVIDER:
         return t("provider.unknown")
     return str(provider_id).title()
+
+
+def plan_label(value: object) -> str:
+    """Upstream reports a login method, not a plan name, and only some of them
+    are proper nouns; the rest need translating instead of title-casing."""
+    text = str(value or "").strip()
+    if not text:
+        return t("plan.connected")
+    key = LOGIN_METHOD_KEYS.get(text.lower().replace(" ", "_").replace("-", "_"))
+    return t(key) if key else text.replace("_", " ").title()
 
 
 def provider_color(provider_id: str, theme: str, order: list[str] | None = None) -> str:
@@ -1034,6 +1148,27 @@ class UsageWindow(QFrame):
         layout.addWidget(reset)
 
 
+class RefreshWorker(QObject):
+    """Every CLI read blocks for seconds and there is one per provider, so doing
+    them on the GUI thread freezes the window. This runs them off it."""
+
+    done = pyqtSignal(dict)
+
+    def __init__(self, command: str, fixture: str | None, known_ids: list[str]):
+        super().__init__()
+        self.command, self.fixture, self.known_ids = command, fixture, known_ids
+
+    def run(self):
+        providers, error = read_usage(self.command, self.fixture)
+        costs: dict[str, dict] = {}
+        cost_error = None
+        if not self.fixture:
+            ids = [provider["id"] for provider in providers] or self.known_ids
+            if ids:
+                costs, cost_error = read_all_costs(self.command, ids)
+        self.done.emit({"providers": providers, "error": error, "costs": costs, "cost_error": cost_error})
+
+
 class StatTile(QFrame):
     def __init__(self, label: str, value: str, detail: str = "", theme: str = "light"):
         super().__init__()
@@ -1144,6 +1279,8 @@ class Dashboard(QMainWindow):
         self.setWindowIcon(app_icon())
         self.resize(500, 780)
         self.setMinimumSize(430, 620)
+        self.refresh_thread: QThread | None = None
+        self.refresh_worker: RefreshWorker | None = None
         self.apply_theme()
         self.build_ui()
         if self.providers:
@@ -1319,7 +1456,32 @@ class Dashboard(QMainWindow):
     # ---- data ----------------------------------------------------------
 
     def refresh(self):
-        providers, error = read_usage(self.command, self.fixture)
+        """Kick off a background read. Scope clicks and repaints stay responsive
+        because no CLI call runs on the GUI thread."""
+        if self.refresh_thread is not None:
+            return
+        thread = QThread(self)
+        worker = RefreshWorker(self.command, self.fixture, [provider["id"] for provider in self.providers])
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.done.connect(self.apply_refresh)
+        worker.done.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self.release_refresh_thread)
+        self.refresh_thread, self.refresh_worker = thread, worker
+        self.refresh_button.setEnabled(False)
+        if not self.providers:
+            self.set_footer("footer.cachedLoading")
+        thread.start()
+
+    def release_refresh_thread(self):
+        thread, self.refresh_thread, self.refresh_worker = self.refresh_thread, None, None
+        if thread is not None:
+            thread.deleteLater()
+        self.refresh_button.setEnabled(True)
+
+    def apply_refresh(self, result: dict):
+        providers, error = result["providers"], result["error"]
         # Geçici CLI hatasında son başarılı ekranı koru.
         if providers:
             self.providers = providers
@@ -1330,9 +1492,9 @@ class Dashboard(QMainWindow):
             self.clear_layout(self.spend_layout)
             self.set_footer("empty.providers") if not error else self.set_footer(None, error)
             return
-        cost_error = None
+        cost_error = result["cost_error"]
         if not self.fixture:
-            self.costs, cost_error = read_all_costs(self.command, [provider["id"] for provider in self.providers])
+            self.costs = result["costs"]
             self.update_token_history()
         if self.scope != ALL_SCOPE and self.scope not in {provider["id"] for provider in self.providers}:
             self.scope = ALL_SCOPE
@@ -1477,7 +1639,7 @@ class Dashboard(QMainWindow):
         eye.setFixedSize(28, 24)
         eye.setToolTip(t("email.hide") if self.revealed_provider_id == provider["id"] else t("email.show"))
         eye.clicked.connect(lambda _checked=False, value=provider["id"]: self.toggle_email(value))
-        plan = QLabel(provider["plan"])
+        plan = QLabel(plan_label(provider["plan"]))
         plan.setObjectName("plan")
         head.addWidget(dot)
         head.addLayout(identity_column)
@@ -1490,67 +1652,84 @@ class Dashboard(QMainWindow):
         return card
 
     def make_pace_card(self, providers: list[dict]) -> QFrame:
+        """Caption + state chip, one line per provider, one guidance sentence.
+        The headline used to be repeated three times (chip, headline, detail
+        sentence) while the numbers below said the same thing again."""
+        rows = provider_pace_rows(providers)
+        pace_data = pace_summary(narrowest_window(providers))
         pace = QFrame()
         pace.setObjectName("pace")
+        # The whole card is themed by state, so green/amber/red is decided once
+        # here and read back by the generated stylesheet.
+        pace.setProperty("paceState", pace_data["state"])
         add_depth(pace, self.theme, blur=26)
         pace_layout = QVBoxLayout(pace)
-        pace_layout.setContentsMargins(17, 16, 17, 16)
-        pace_layout.setSpacing(9)
-        pace_data = pace_summary(narrowest_window(providers))
-        pace_header = QHBoxLayout()
-        pace_context = QLabel(t("pace.context") if len(providers) < 2 else t("pace.contextNarrow"))
-        pace_context.setObjectName("paceContext")
-        pace_status = QLabel(pace_data["headline"])
-        pace_status.setObjectName("paceStatus")
-        pace_header.addWidget(pace_context)
-        pace_header.addStretch()
-        pace_header.addWidget(pace_status)
-        pace_headline = QLabel(pace_data["headline"])
-        pace_headline.setObjectName("paceHeadline")
-        pace_text = QLabel(pace_data["detail"])
-        pace_text.setWordWrap(True)
-        pace_text.setObjectName("paceText")
-        pace_metrics = QFrame()
-        pace_metrics.setObjectName("paceMetrics")
-        metrics_layout = QHBoxLayout(pace_metrics)
-        metrics_layout.setContentsMargins(13, 11, 13, 11)
-        metrics_layout.setSpacing(12)
-        remaining_column = QVBoxLayout()
-        remaining_column.setSpacing(1)
-        remaining_caption = QLabel(t("pace.remaining"))
-        remaining_caption.setObjectName("paceMetricLabel")
-        remaining_value = QLabel(pace_data["remaining"])
-        remaining_value.setObjectName("paceMetricValue")
-        remaining_column.addWidget(remaining_caption)
-        remaining_column.addWidget(remaining_value)
-        divider = QFrame()
-        divider.setObjectName("paceDivider")
-        divider.setFrameShape(QFrame.Shape.VLine)
-        reset_column = QVBoxLayout()
-        reset_column.setSpacing(1)
-        reset_caption = QLabel(t("pace.resetLabel"))
-        reset_caption.setObjectName("paceMetricLabel")
-        reset_value = QLabel(pace_data["reset"])
-        reset_value.setObjectName("paceMetricValue")
-        reset_value.setWordWrap(True)
-        reset_column.addWidget(reset_caption)
-        reset_column.addWidget(reset_value)
-        metrics_layout.addLayout(remaining_column, 1)
-        metrics_layout.addWidget(divider)
-        metrics_layout.addLayout(reset_column, 1)
-        pace_guidance = QLabel(pace_data["guidance"])
-        pace_guidance.setWordWrap(True)
-        pace_guidance.setObjectName("paceGuidance")
-        pace_method = QLabel(pace_data["method"])
-        pace_method.setWordWrap(True)
-        pace_method.setObjectName("paceMethod")
-        pace_layout.addLayout(pace_header)
-        pace_layout.addWidget(pace_headline)
-        pace_layout.addWidget(pace_text)
-        pace_layout.addWidget(pace_metrics)
-        pace_layout.addWidget(pace_guidance)
-        pace_layout.addWidget(pace_method)
+        pace_layout.setContentsMargins(17, 15, 17, 15)
+        pace_layout.setSpacing(11)
+
+        header = QHBoxLayout()
+        caption = QLabel(t("pace.context"))
+        caption.setObjectName("paceContext")
+        status = QLabel(pace_data["headline"])
+        status.setObjectName("paceStatus")
+        header.addWidget(caption)
+        header.addStretch()
+        header.addWidget(status)
+        pace_layout.addLayout(header)
+
+        if rows:
+            pace_layout.addWidget(self.make_pace_body(rows))
+        else:
+            detail = QLabel(pace_data["detail"])
+            detail.setWordWrap(True)
+            detail.setObjectName("paceText")
+            pace_layout.addWidget(detail)
+
+        guidance = QLabel(pace_data["guidance"])
+        guidance.setWordWrap(True)
+        guidance.setObjectName("paceGuidance")
+        pace_layout.addWidget(guidance)
+        # The method disclaimer never changes; a tooltip keeps it available
+        # without spending a permanent line on it.
+        pace.setToolTip(pace_data["method"])
         return pace
+
+    def make_pace_body(self, rows: list[dict]) -> QFrame:
+        """One line per provider, tightest window first. narrowest_window()
+        collapses the combined scope to a single governing window, which showed
+        Codex alone and hid Claude entirely."""
+        body = QFrame()
+        body.setObjectName("paceMetrics")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(13, 12, 13, 12)
+        layout.setSpacing(13)
+        track = self.track_color()
+        for row in rows:
+            # Provider brand colours already identify the cards above; here the
+            # colour has to answer "how much is left", so it follows the state.
+            color = pace_color(row["state"], self.theme)
+            entry = QVBoxLayout()
+            entry.setSpacing(5)
+            head = QHBoxLayout()
+            head.setSpacing(7)
+            name = QLabel(f"{row['name']} · {row['label']}")
+            name.setObjectName("windowLabel")
+            percentage = QLabel(percent_text(row["left"]))
+            percentage.setObjectName("percentage")
+            percentage.setStyleSheet(f"color:{color};")
+            suffix = QLabel(t("usage.left"))
+            suffix.setObjectName("percentageSuffix")
+            head.addWidget(name)
+            head.addStretch()
+            head.addWidget(percentage)
+            head.addWidget(suffix)
+            entry.addLayout(head)
+            entry.addWidget(ProgressTrack(row["left"], color, track))
+            reset = QLabel(t("usage.reset", value=row["reset"]))
+            reset.setObjectName("reset")
+            entry.addWidget(reset)
+            layout.addLayout(entry)
+        return body
 
     # ---- spend tab ------------------------------------------------------
 
@@ -1754,15 +1933,13 @@ QTabBar::tab { padding:8px 15px; margin-right:6px; border-radius:10px; font-weig
 #legendShare { font-family:'Noto Sans Mono', monospace; font-size:12px; }
 /* Small all-caps captions lose their Turkish diacritics below ~10px, so the
    caption scale starts at 10.5px and leans on tracking instead of size. */
-#cardCaption, #statLabel, #paceContext, #paceMetricLabel { font-size:10.5px; font-weight:700; letter-spacing:.9px; }
+#cardCaption, #statLabel, #paceContext { font-size:10.5px; font-weight:700; letter-spacing:.9px; }
 #heroValue { font-family:'Noto Sans Mono', monospace; font-size:38px; font-weight:700; letter-spacing:-1.4px; }
 #heroUnit { font-size:11px; }
 #heroCost { font-family:'Noto Sans Mono', monospace; font-size:17px; font-weight:600; }
 #paceStatus { border-radius:9px; padding:4px 10px; font-size:10.5px; font-weight:600; }
-#paceHeadline { font-size:20px; font-weight:700; letter-spacing:-.4px; }
 #paceText, #paceGuidance { font-size:12px; }
-#paceMethod, #statDetail { font-size:10.5px; }
-#paceMetricValue { font-family:'Noto Sans Mono', monospace; font-size:17px; font-weight:600; }
+#statDetail { font-size:10.5px; }
 #statValue { font-family:'Noto Sans Mono', monospace; font-size:18px; font-weight:600; letter-spacing:-.4px; }
 #historyTitle { font-size:13px; font-weight:600; }
 #historyPicker { min-width:130px; font-size:11px; font-weight:600; }
@@ -1804,18 +1981,6 @@ QWidget { color:#172236; }
     background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1,
         stop:0 rgba(91, 110, 214, 0.16), stop:0.6 rgba(255, 255, 255, 0.86), stop:1 rgba(255, 255, 255, 0.7));
     border:1px solid rgba(91, 110, 214, 0.22); border-radius:19px; }
-#pace {
-    background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1,
-        stop:0 rgba(28, 127, 82, 0.13), stop:0.65 rgba(255, 255, 255, 0.88), stop:1 rgba(255, 255, 255, 0.72));
-    border:1px solid rgba(28, 127, 82, 0.2); border-radius:19px; }
-#paceContext, #paceMetricLabel { color:#4d7b64; }
-#paceStatus { background:rgba(28, 127, 82, 0.14); color:#146042; }
-#paceHeadline { color:#123c2b; }
-#paceText, #paceGuidance { color:#2f5b46; }
-#paceMethod { color:#6f9182; }
-#paceMetrics { background:rgba(255, 255, 255, 0.72); border:1px solid rgba(28, 127, 82, 0.16); border-radius:12px; }
-#paceMetricValue { color:#12452f; }
-#paceDivider { color:rgba(28, 127, 82, 0.18); background:rgba(28, 127, 82, 0.18); max-width:1px; }
 #heroValue, #heroCost, #statValue, #providerName, #historyTitle, #tokenDayValue, #legendName { color:#142033; }
 #plan { color:#5c6a80; background:rgba(20, 32, 51, 0.06); }
 #legendValue { color:#5c6a80; }
@@ -1859,18 +2024,6 @@ QWidget { color:#f3f5f8; }
     background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1,
         stop:0 rgba(120, 145, 255, 0.2), stop:0.6 rgba(255, 255, 255, 0.05), stop:1 rgba(255, 255, 255, 0.02));
     border:1px solid rgba(140, 164, 255, 0.24); border-radius:19px; }
-#pace {
-    background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1,
-        stop:0 rgba(88, 214, 150, 0.17), stop:0.65 rgba(255, 255, 255, 0.045), stop:1 rgba(255, 255, 255, 0.02));
-    border:1px solid rgba(88, 214, 150, 0.22); border-radius:19px; }
-#paceContext, #paceMetricLabel { color:#8fc0a7; }
-#paceStatus { background:rgba(88, 214, 150, 0.16); color:#8ff0bb; }
-#paceHeadline { color:#e6faef; }
-#paceText, #paceGuidance { color:#b6d8c6; }
-#paceMethod { color:#7e9c8b; }
-#paceMetrics { background:rgba(255, 255, 255, 0.045); border:1px solid rgba(88, 214, 150, 0.18); border-radius:12px; }
-#paceMetricValue { color:#ddf6e6; }
-#paceDivider { color:rgba(88, 214, 150, 0.2); background:rgba(88, 214, 150, 0.2); max-width:1px; }
 #heroValue, #heroCost, #statValue, #providerName, #historyTitle, #tokenDayValue, #legendName { color:#ffffff; }
 #plan { color:#aeb8c8; background:rgba(255, 255, 255, 0.07); }
 #legendValue { color:#aeb8c8; }
@@ -1894,8 +2047,35 @@ QToolTip { background:#10141c; color:#f3f5f8; border:1px solid rgba(255, 255, 25
 """
 
 
+def pace_style(theme: str) -> str:
+    """The current-state card was painted green in the stylesheet, so it stayed
+    green at 2% left. Its palette is generated per state instead, and the card
+    picks a block through the paceState property it sets on itself."""
+    light = theme != "dark"
+    panel = "rgba(255, 255, 255, 0.72)" if light else "rgba(255, 255, 255, 0.045)"
+    blocks = []
+    for state, tone in PACE_PALETTE["light" if light else "dark"].items():
+        tint = tone["tint"]
+        stops = (
+            f"stop:0 rgba({tint}, 0.13), stop:0.65 rgba(255, 255, 255, 0.88), stop:1 rgba(255, 255, 255, 0.72)"
+            if light else
+            f"stop:0 rgba({tint}, 0.17), stop:0.65 rgba(255, 255, 255, 0.045), stop:1 rgba(255, 255, 255, 0.02)"
+        )
+        scope = f'#pace[paceState="{state}"]'
+        blocks.append(
+            f"{scope} {{\n"
+            f"    background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1, {stops});\n"
+            f"    border:1px solid rgba({tint}, {0.2 if light else 0.22}); border-radius:19px; }}\n"
+            f"{scope} #paceContext {{ color:{tone['muted']}; }}\n"
+            f"{scope} #paceStatus {{ background:rgba({tint}, {0.14 if light else 0.16}); color:{tone['chip']}; }}\n"
+            f"{scope} #paceText, {scope} #paceGuidance {{ color:{tone['body']}; }}\n"
+            f"{scope} #paceMetrics {{ background:{panel}; border:1px solid rgba({tint}, {0.16 if light else 0.18}); border-radius:12px; }}\n"
+        )
+    return "".join(blocks)
+
+
 def style_for_theme(theme: str) -> str:
-    return DARK_STYLE if theme == "dark" else LIGHT_STYLE
+    return (DARK_STYLE if theme == "dark" else LIGHT_STYLE) + pace_style(theme)
 
 
 def acquire_single_instance() -> QSharedMemory | None:

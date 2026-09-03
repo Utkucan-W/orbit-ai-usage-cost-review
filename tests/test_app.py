@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from datetime import date, timezone, timedelta
 from pathlib import Path
@@ -146,13 +147,61 @@ class AppTests(unittest.TestCase):
         light, dark = app.style_for_theme("light"), app.style_for_theme("dark")
         self.assertIn("#eef2fa", light)
         self.assertIn("#141926", dark)
-        self.assertEqual(app.style_for_theme("unknown"), app.LIGHT_STYLE)
+        self.assertEqual(app.style_for_theme("unknown"), app.style_for_theme("light"))
         for style in (light, dark):
             # The glass surfaces only read as layers if the ground is a gradient
             # and the cards above it stay translucent.
             self.assertIn("qlineargradient", style)
             self.assertIn("#heroCard", style)
             self.assertIn("QWidget { background:transparent;", style)
+
+    def test_pace_state_bands_cover_the_whole_range(self):
+        """The card used to be green in the stylesheet regardless of the number
+        next to it; the bands are what make it amber and red."""
+        self.assertEqual(app.pace_state(5, 95), "high")
+        self.assertEqual(app.pace_state(45, 55), "balanced")
+        self.assertEqual(app.pace_state(75, 25), "declining")
+        self.assertEqual(app.pace_state(95, 5), "critical")
+        self.assertEqual(app.pace_state(100, 0), "exhausted")
+
+    def test_pace_styles_are_generated_per_state(self):
+        for theme in ("light", "dark"):
+            style = app.pace_style(theme)
+            for state in ("high", "balanced", "declining", "critical", "exhausted", "unknown"):
+                self.assertIn(f'#pace[paceState="{state}"]', style)
+            # Amber and red have to differ from green, otherwise the property
+            # selector is wired up but the card still looks the same.
+            colors = {app.pace_color(state, theme)
+                      for state in ("high", "declining", "critical")}
+            self.assertEqual(len(colors), 3)
+            # pace_color() paints the bars; the card chrome uses the same
+            # palette entry as an rgba tint.
+            tint = app.PACE_PALETTE["dark" if theme == "dark" else "light"]["critical"]["tint"]
+            self.assertIn(f"rgba({tint}", style)
+
+    def test_card_state_matches_the_worst_provider_row(self):
+        """The chip and the rows are computed on two different paths; a chip
+        reading "balanced" above a critical row would be worse than the bug
+        this card was rebuilt to fix."""
+        severity = ["exhausted", "critical", "declining", "balanced", "high"]
+        for codex_used, claude_used in [(2, 5), (50, 45), (80, 30), (92, 40), (30, 88), (100, 10)]:
+            payload = [
+                {"provider": "Codex", "usage": {"primary": {"usedPercent": codex_used, "resetsAt": "2026-09-07T09:41:00Z"},
+                                                "secondary": {"usedPercent": codex_used, "resetsAt": "2026-09-07T09:41:00Z"}}},
+                {"provider": "Claude", "usage": {"primary": {"usedPercent": claude_used, "resetsAt": "2026-09-03T14:30:00Z"}}},
+            ]
+            providers, _ = app.normalize_providers(payload)
+            rows = app.provider_pace_rows(providers)
+            card = app.pace_summary(app.narrowest_window(providers))["state"]
+            worst = min((row["state"] for row in rows), key=severity.index)
+            self.assertEqual(card, worst, f"codex={codex_used} claude={claude_used} rows={rows}")
+
+    def test_pace_card_lists_every_provider_instead_of_the_narrowest(self):
+        """Guards the reported bug: the card showed only Codex's reset because
+        it rendered narrowest_window() alone."""
+        names = app.Dashboard.make_pace_card.__code__.co_names
+        self.assertIn("provider_pace_rows", names)
+        self.assertIn("setProperty", names)
 
     def test_caption_scale_stays_large_enough_for_turkish_diacritics(self):
         """Below ~10px the dot on İ and the umlaut on Ü drop out when rendered."""
@@ -438,6 +487,103 @@ class AppTests(unittest.TestCase):
         self.assertEqual(orbit.value("theme"), "light")
         self.assertEqual(orbit.value("token_history_view"), "daily")
         self.assertEqual(orbit.value(app.CACHED_PROVIDERS_KEY), "[]")
+
+    # ---- pace card: combined scope ------------------------------------
+
+    def test_provider_pace_rows_keeps_every_provider(self):
+        """narrowest_window() collapses the combined scope to one governing
+        window, which hid every other provider on the current-state card."""
+        providers = [
+            {"id": "codex", "name": "Codex", "windows": [
+                {"label": "window.session", "left": 58, "reset": "2 sa. 14 dk."},
+                {"label": "window.weekly", "left": 82, "reset": "4 gün 6 sa."},
+            ]},
+            {"id": "claude", "name": "Claude", "windows": [
+                {"label": "window.session", "left": 33, "reset": "48 dk."},
+                {"label": "window.weekly", "left": 69, "reset": "3 gün 2 sa."},
+            ]},
+        ]
+        rows = app.provider_pace_rows(providers)
+        self.assertEqual([row["id"] for row in rows], ["claude", "codex"])
+        self.assertEqual([row["left"] for row in rows], [33, 58])
+        # Each row carries that provider's own tightest window, not the global one.
+        self.assertEqual({row["label"] for row in rows}, {app.t("window.session")})
+
+    def test_provider_pace_rows_skips_providers_without_windows(self):
+        rows = app.provider_pace_rows([{"id": "codex", "name": "Codex", "windows": []}])
+        self.assertEqual(rows, [])
+
+    # ---- refresh runs off the GUI thread -------------------------------
+
+    def test_refresh_worker_gathers_usage_and_costs(self):
+        calls = []
+
+        def fake_usage(command, fixture):
+            calls.append("usage")
+            return [{"id": "codex"}, {"id": "claude"}], None
+
+        def fake_costs(command, ids):
+            calls.append(tuple(ids))
+            return {"codex": {"sessionTokens": 5}}, None
+
+        self._patch(app, "read_usage", fake_usage)
+        self._patch(app, "read_all_costs", fake_costs)
+        worker = app.RefreshWorker("codexbar", None, ["stale"])
+        received = []
+        worker.done.connect(received.append)
+        worker.run()
+        self.assertEqual(calls, ["usage", ("codex", "claude")])
+        self.assertEqual(received[0]["providers"], [{"id": "codex"}, {"id": "claude"}])
+        self.assertEqual(received[0]["costs"], {"codex": {"sessionTokens": 5}})
+
+    def test_refresh_worker_does_not_block_the_caller(self):
+        """The freeze was a blocking subprocess on the GUI thread: one CLI call
+        per provider, each up to 25s, while the event loop waited."""
+        from PyQt6.QtCore import QCoreApplication, QThread
+
+        loop_app = QCoreApplication.instance() or QCoreApplication([])
+        delay = 1.0
+
+        def slow_usage(command, fixture):
+            time.sleep(delay)
+            return [{"id": "codex"}], None
+
+        self._patch(app, "read_usage", slow_usage)
+        self._patch(app, "read_all_costs", lambda command, ids: ({}, None))
+
+        worker = app.RefreshWorker("codexbar", None, [])
+        thread = QThread()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        results = []
+        worker.done.connect(results.append)
+        worker.done.connect(thread.quit)
+
+        started = time.monotonic()
+        thread.start()
+        # The caller must come back immediately; the slow read is elsewhere.
+        self.assertLess(time.monotonic() - started, delay / 2)
+
+        deadline = time.monotonic() + delay * 5
+        while not results and time.monotonic() < deadline:
+            loop_app.processEvents()
+            time.sleep(0.01)
+        thread.wait(2000)
+        self.assertEqual(results[0]["providers"], [{"id": "codex"}])
+
+    def test_dashboard_refresh_dispatches_instead_of_reading_inline(self):
+        """Guards the actual regression: the worker test alone would still pass
+        if refresh() went back to calling the CLI on the GUI thread."""
+        names = app.Dashboard.refresh.__code__.co_names
+        self.assertIn("RefreshWorker", names)
+        self.assertIn("QThread", names)
+        self.assertNotIn("read_usage", names)
+        self.assertNotIn("read_all_costs", names)
+
+    def _patch(self, target, name, value):
+        original = getattr(target, name)
+        setattr(target, name, value)
+        self.addCleanup(setattr, target, name, original)
 
 
 if __name__ == "__main__":
