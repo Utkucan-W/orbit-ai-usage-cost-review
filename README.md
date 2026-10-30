@@ -22,8 +22,9 @@ pip install -r requirements.txt
 python3 app.py
 ```
 
-Orbit looks for `codexbar-0540` and then `codexbar`, first in `~/.local/bin` and
-then on your `PATH`. Point it somewhere else with:
+Orbit checks `codexbar-0540` and `codexbar` in `~/.local/bin` and on your
+`PATH`, then chooses the newest version that is at least 0.54. Point it
+somewhere else with:
 
 ```bash
 python3 app.py --cli /path/to/codexbar
@@ -93,8 +94,20 @@ selection.
   running in the tray.
 - Automatic refresh every 60 seconds, plus a manual Refresh button. Reads run on
   a background thread, so the window never freezes while the CLI is working.
-- A failed refresh keeps the last good screen and says so in the footer rather
-  than blanking the dashboard.
+- Each provider is read by name and shown as soon as it answers, instead of
+  waiting for the slowest one. The full `--provider all` scan runs once per
+  launch, only to notice a provider Orbit has not seen yet.
+- **Codex** falls back to the local `codex app-server` when CodexBar cannot
+  start it, and shows the free rate-limit reset credits and their nearest
+  expiry. Orbit never reads credentials; the Codex CLI answers from its own
+  login.
+- **Compaction rate** under each client: the share of sessions active in the
+  last 7 days that were compacted at least once, counted from the local
+  transcripts in `~/.claude/projects` and `~/.codex/sessions`.
+- A failed refresh keeps provider identity and historical costs visible, but
+  marks current usage as unknown instead of treating cached percentages as live.
+  Usage also becomes unknown after 45 minutes without a successful read, or
+  when an absolute reset time has already passed.
 - Token history is stored per day and per provider on your device for 365 days,
   so the monthly chart outlives the CLI's own reporting window.
 - Only one instance runs: a second launch reports that Orbit is already running

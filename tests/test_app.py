@@ -2,7 +2,7 @@ import json
 import tempfile
 import time
 import unittest
-from datetime import date, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
 import app
@@ -480,6 +480,30 @@ class AppTests(unittest.TestCase):
         app.save_cached_providers(settings, providers)
         self.assertEqual(app.load_cached_providers(settings), providers)
 
+    def test_cached_or_failed_usage_cannot_drive_capacity_guidance(self):
+        now = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
+        providers = [{"id": "codex", "name": "Codex", "windows": [
+            {"label": "window.session", "used": 12, "left": 88, "reset_raw": "2026-09-27T13:00:00Z"}],
+            "credits": 40}]
+        for observed_at in (None, now - timedelta(minutes=46)):
+            shown = app.current_usage_providers(providers, observed_at, now)
+            self.assertEqual(shown[0]["windows"], [])
+            self.assertIsNone(shown[0]["credits"])
+            self.assertTrue(shown[0]["has_unknown_windows"])
+            self.assertEqual(app.pace_summary(app.narrowest_window(shown))["state"], "unknown")
+        self.assertEqual(providers[0]["windows"][0]["left"], 88)
+
+    def test_live_usage_excludes_expired_window_but_keeps_valid_window(self):
+        now = datetime(2026, 9, 27, 12, tzinfo=timezone.utc)
+        providers = [{"windows": [
+            {"left": 95, "reset_raw": "2026-09-27T11:59:00Z"},
+            {"left": 40, "reset_raw": "2026-09-27T12:30:00Z"},
+            {"left": 60, "reset_raw": "30m"}], "credits": 10}]
+        shown = app.current_usage_providers(providers, now, now)
+        self.assertEqual([item["left"] for item in shown[0]["windows"]], [40, 60])
+        self.assertEqual(shown[0]["credits"], 10)
+        self.assertTrue(shown[0]["has_unknown_windows"])
+
     def test_malformed_cached_provider_snapshot_is_ignored(self):
         class Settings:
             def value(self, key, default=""):
@@ -535,26 +559,217 @@ class AppTests(unittest.TestCase):
 
     # ---- refresh runs off the GUI thread -------------------------------
 
+    def test_cost_reads_overlap(self):
+        """One slow provider must not delay the other provider's CLI call."""
+        from threading import Barrier
+
+        calls = []
+        both_started = Barrier(2)
+
+        def slow_cost(command, provider):
+            calls.append(provider)
+            both_started.wait(timeout=2)
+            return {"provider": provider}, None
+
+        self._patch(app, "read_cost", slow_cost)
+        costs, error = app.read_all_costs("codexbar", ["codex", "claude"])
+        self.assertIsNone(error)
+        self.assertEqual(set(costs), {"codex", "claude"})
+        self.assertEqual(len(calls), 2)
+
+    def test_usage_is_emitted_before_cost_read_finishes(self):
+        self._patch_live_reads({"codex": [{"id": "codex"}]})
+        events = []
+
+        def slow_costs(command, ids):
+            events.append("cost-start")
+            return {}, None
+
+        self._patch(app, "read_all_costs", slow_costs)
+        worker = app.RefreshWorker("codexbar", None, [])
+        worker.usage_ready.connect(lambda result: events.append("usage-ready"))
+        worker.done.connect(lambda result: events.append("done"))
+        worker.run()
+        # One emit carries the limits, one the compaction figures; both precede costs.
+        self.assertEqual(events, ["usage-ready", "usage-ready", "cost-start", "done"])
+
+    def test_refresh_click_queues_a_new_run_while_busy(self):
+        class BusyDashboard:
+            refresh_thread = object()
+            refresh_pending = False
+
+            def set_footer(self, key):
+                self.footer = key
+
+            def refresh(self):
+                self.started = True
+
+        dashboard = BusyDashboard()
+        app.Dashboard.request_refresh(dashboard)
+        self.assertTrue(dashboard.refresh_pending)
+        self.assertEqual(dashboard.footer, "footer.refreshQueued")
+        dashboard.refresh_thread = None
+        app.Dashboard.request_refresh(dashboard)
+        self.assertTrue(dashboard.started)
+
     def test_refresh_worker_gathers_usage_and_costs(self):
         calls = []
 
-        def fake_usage(command, fixture):
-            calls.append("usage")
-            return [{"id": "codex"}, {"id": "claude"}], None
-
         def fake_costs(command, ids):
-            calls.append(tuple(ids))
+            calls.append(tuple(sorted(ids)))
             return {"codex": {"sessionTokens": 5}}, None
 
-        self._patch(app, "read_usage", fake_usage)
+        asked = self._patch_live_reads({"codex": [{"id": "codex"}], "claude": [{"id": "claude"}]})
         self._patch(app, "read_all_costs", fake_costs)
         worker = app.RefreshWorker("codexbar", None, ["stale"])
         received = []
         worker.done.connect(received.append)
         worker.run()
-        self.assertEqual(calls, ["usage", ("codex", "claude")])
-        self.assertEqual(received[0]["providers"], [{"id": "codex"}, {"id": "claude"}])
+        # A cached provider is asked again by name, alongside the defaults.
+        self.assertEqual(sorted(asked), ["claude", "codex", "stale"])
+        self.assertEqual(calls, [("claude", "codex")])
+        self.assertEqual(sorted(item["id"] for item in received[0]["providers"]), ["claude", "codex"])
         self.assertEqual(received[0]["costs"], {"codex": {"sessionTokens": 5}})
+
+    def test_refresh_worker_never_asks_upstream_for_every_provider_twice(self):
+        """`--provider all` walks ~70 providers and took 35s per refresh; it may
+        run once per launch to discover a new provider, never on every tick."""
+        scans = []
+
+        def full_scan(command, fixture):
+            scans.append("all")
+            return [{"id": "gemini"}, {"id": "codex", "stale": True}], None
+
+        self._patch_live_reads({"codex": [{"id": "codex"}]})
+        self._patch(app, "read_usage", full_scan)
+        self._patch(app, "read_all_costs", lambda command, ids: ({}, None))
+        received, late = [], []
+        for discover in (True, False):
+            worker = app.RefreshWorker("codexbar", None, [], discover=discover)
+            worker.done.connect(received.append)
+            worker.usage_ready.connect(lambda result: late.append(result) if received else None)
+            worker.run()
+        self.assertEqual(scans, ["all"])
+        # The slow scan never holds back the result; it adds only what is new afterwards.
+        self.assertEqual(received[0]["providers"], [{"id": "codex"}])
+        self.assertEqual(late[0]["providers"], [{"id": "gemini"}])
+        self.assertEqual(received[1]["providers"], [{"id": "codex"}])
+
+    def test_claude_usage_prefers_oauth_and_falls_back_to_auto(self):
+        """`auto` drives the Claude CLI on Linux and took 14.6s against 0.4s for OAuth."""
+        asked = []
+        entry = [{"provider": "claude", "source": "oauth", "usage": {"primary": {"usedPercent": 10}}}]
+
+        def fake(command, arguments):
+            asked.append("--source" in arguments)
+            return (entry, None) if "--source" not in arguments or oauth_works else (None, "oauth missing")
+
+        self._patch(app, "run_json", fake)
+        for oauth_works in (True, False):
+            asked.clear()
+            providers, error = app.read_provider_usage("codexbar", "claude")
+            self.assertEqual(providers[0]["id"], "claude")
+            self.assertEqual(asked, [True] if oauth_works else [True, False])
+
+    def test_cost_skips_session_mirrors_that_crash_codexbar(self):
+        seen = []
+        self._patch(app, "run_json", lambda command, arguments: (seen.append(arguments), ({}, None))[1])
+        app.read_cost("codexbar", "claude")
+        self.assertIn("--provider-native-only", seen[0])
+
+    def test_codex_falls_back_to_its_own_cli_when_codexbar_cannot_start_it(self):
+        """Codex 0.159 dropped `--ask-for-approval untrusted`, which CodexBar 0.53
+        still passes: the app-server exits at once and Codex vanished from Orbit."""
+        broken = [{"provider": "codex", "source": "auto",
+                   "error": {"message": "codex app-server closed stdout", "code": 1}}]
+        direct = app.codex_entry_from_rpc(
+            {"rateLimits": {"planType": "plus",
+                            "primary": {"usedPercent": 50, "resetsAt": 1790857345},
+                            "secondary": {"usedPercent": 59, "resetsAt": 1791309939},
+                            "credits": {"hasCredits": False, "balance": "0"}},
+             "rateLimitResetCredits": {"availableCount": 2, "credits": [
+                 {"status": "available", "expiresAt": 1792692576},
+                 {"status": "available", "expiresAt": 1791150492},
+                 {"status": "used", "expiresAt": 1790000000}]}},
+            {"account": {"email": "utku@example.com", "planType": "plus"}})
+        self._patch(app, "run_json", lambda command, arguments: (broken, None))
+        self._patch(app, "read_codex_direct", lambda: (direct, None))
+        providers, error = app.read_provider_usage("codexbar", "codex")
+        self.assertIsNone(error)
+        codex = providers[0]
+        self.assertEqual((codex["id"], codex["source"], codex["email"]), ("codex", "codex-cli", "utku@example.com"))
+        self.assertEqual([item["used"] for item in codex["windows"]], [50.0, 59.0])
+        self.assertEqual(codex["windows"][0]["reset_raw"], "2026-10-01T12:22:25Z")
+        self.assertEqual(codex["credits"], 0.0)
+        # Only credits still available count, and the soonest expiry is the one shown.
+        self.assertEqual(codex["reset_credits"], {"available": 2, "next_expiry": "2026-10-04T21:48:12Z"})
+
+    def test_codex_failure_reports_the_upstream_reason(self):
+        broken = [{"provider": "codex", "error": {"message": "codex app-server closed stdout"}}]
+        self._patch(app, "run_json", lambda command, arguments: (broken, None))
+        self._patch(app, "read_codex_direct", lambda: (None, "direct failed"))
+        self.assertEqual(app.read_provider_usage("codexbar", "codex"), ([], "codex app-server closed stdout"))
+
+    def test_working_codexbar_entry_only_gains_reset_credits(self):
+        upstream = [{"provider": "codex", "source": "oauth",
+                     "usage": {"primary": {"usedPercent": 10}, "accountEmail": "a@example.com"}}]
+        direct = {"provider": "codex", "source": "codex-cli", "usage": {"primary": {"usedPercent": 99}},
+                  "resetCredits": {"available": 3, "next_expiry": None}}
+        self._patch(app, "run_json", lambda command, arguments: (upstream, None))
+        self._patch(app, "read_codex_direct", lambda: (direct, None))
+        codex = app.read_provider_usage("codexbar", "codex")[0][0]
+        self.assertEqual((codex["source"], codex["windows"][0]["used"]), ("oauth", 10.0))
+        self.assertEqual(codex["reset_credits"]["available"], 3)
+
+    def test_compaction_rate_counts_sessions_compacted_in_the_window(self):
+        now = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+        recent, old = "2026-09-30T10:00:00Z", "2026-09-01T10:00:00Z"
+        with tempfile.TemporaryDirectory() as folder:
+            claude, codex = Path(folder, "claude", "project"), Path(folder, "codex", "2026", "09", "30")
+            claude.mkdir(parents=True)
+            codex.mkdir(parents=True)
+
+            def boundary(stamp):
+                return json.dumps({"type": "system", "subtype": "compact_boundary", "timestamp": stamp})
+
+            Path(claude, "twice.jsonl").write_text(boundary(recent) + "\n" + boundary(recent) + "\n")
+            Path(claude, "quiet.jsonl").write_text(json.dumps({"type": "user", "timestamp": recent}) + "\n")
+            # Still active, but its only compaction predates the window.
+            Path(claude, "long-ago.jsonl").write_text(boundary(old) + "\n")
+            # A user who merely types the marker is not a compaction.
+            Path(claude, "mention.jsonl").write_text(
+                json.dumps({"type": "user", "text": '"compact_boundary"', "timestamp": recent}) + "\n")
+            Path(codex, "rollout-a.jsonl").write_text(
+                json.dumps({"type": "compacted", "timestamp": recent, "payload": {}}) + "\n")
+            # Codex replays an encrypted compaction item on every later turn; it is not a new event.
+            Path(codex, "rollout-b.jsonl").write_text(
+                json.dumps({"type": "response_item", "timestamp": recent, "payload": {"type": "compaction"}}) + "\n")
+            sources = {"claude": (Path(folder, "claude"), "*/*.jsonl", b'"compact_boundary"'),
+                       "codex": (Path(folder, "codex"), "**/*.jsonl", b'"compacted"')}
+            self.assertEqual(app.compaction_stats("claude", now, sources),
+                             {"sessions": 4, "compacted": 1, "events": 2, "rate": 25.0})
+            self.assertEqual(app.compaction_stats("codex", now, sources),
+                             {"sessions": 2, "compacted": 1, "events": 1, "rate": 50.0})
+            self.assertIsNone(app.compaction_stats("gemini", now, sources))
+
+    def test_each_provider_goes_stale_on_its_own_clock(self):
+        """Codex answers in under a second and Claude in ~15; one shared timestamp
+        would either hide the fast one or vouch for the slow one's old numbers."""
+        now = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+        future = "2026-10-01T15:00:00Z"
+        providers = [
+            {"id": "codex", "windows": [{"reset_raw": future}], "credits": 0.0, "reset_credits": {"available": 3}},
+            {"id": "claude", "windows": [{"reset_raw": future}], "credits": None},
+        ]
+        shown = app.current_usage_providers(providers, now, now, observed_by_id={"codex": now})
+        self.assertEqual((len(shown[0]["windows"]), shown[0]["reset_credits"]), (1, {"available": 3}))
+        self.assertFalse(shown[0]["has_unknown_windows"])
+        self.assertEqual((shown[1]["windows"], shown[1]["has_unknown_windows"]), ([], True))
+
+    def test_merge_keeps_a_failed_provider_and_its_position(self):
+        current = [{"id": "claude", "v": 1}, {"id": "codex", "v": 1}]
+        merged = app.merge_providers(current, [{"id": "codex", "v": 2}, {"id": "gemini", "v": 2}])
+        self.assertEqual(merged, [{"id": "claude", "v": 1}, {"id": "codex", "v": 2}, {"id": "gemini", "v": 2}])
 
     def test_refresh_worker_does_not_block_the_caller(self):
         """The freeze was a blocking subprocess on the GUI thread: one CLI call
@@ -564,11 +779,12 @@ class AppTests(unittest.TestCase):
         loop_app = QCoreApplication.instance() or QCoreApplication([])
         delay = 1.0
 
-        def slow_usage(command, fixture):
+        def slow_usage(command, provider_id):
             time.sleep(delay)
-            return [{"id": "codex"}], None
+            return ([{"id": "codex"}], None) if provider_id == "codex" else ([], "absent")
 
-        self._patch(app, "read_usage", slow_usage)
+        self._patch(app, "read_provider_usage", slow_usage)
+        self._patch(app, "read_compaction", lambda ids: {})
         self._patch(app, "read_all_costs", lambda command, ids: ({}, None))
 
         worker = app.RefreshWorker("codexbar", None, [])
@@ -599,6 +815,19 @@ class AppTests(unittest.TestCase):
         self.assertIn("QThread", names)
         self.assertNotIn("read_usage", names)
         self.assertNotIn("read_all_costs", names)
+
+    def _patch_live_reads(self, by_provider: dict) -> list:
+        """Stand in for the per-provider CLI reads; returns the ids that were asked."""
+        asked = []
+
+        def fake(command, provider_id):
+            asked.append(provider_id)
+            found = by_provider.get(provider_id)
+            return (found, None) if found else ([], "absent")
+
+        self._patch(app, "read_provider_usage", fake)
+        self._patch(app, "read_compaction", lambda ids: {})
+        return asked
 
     def _patch(self, target, name, value):
         original = getattr(target, name)

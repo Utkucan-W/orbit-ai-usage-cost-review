@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
@@ -70,9 +72,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "usage.left": "kaldı",
         "usage.reset": "Sıfırlanma: {value}",
         "usage.resetUnknown": "Reset zamanı bilinmiyor",
+        "usage.unknown": "Güncel kullanım bilinmiyor",
         "email.show": "E-postayı göster",
         "email.hide": "E-postayı gizle",
         "account.fallback": "Bağlı hesap",
+        "resetCredits.line": "Sıfırlama kredisi: {count} · en yakın bitiş {date}",
+        "resetCredits.plain": "Sıfırlama kredisi: {count}",
+        "compaction.label": "Compaction · son {days} gün",
+        "compaction.detail": "{compacted}/{sessions} oturum · {events} kez",
+        "compaction.tip": "Son {days} günde en az bir kez sıkıştırılan oturumların payı",
+        "error.codexDirect": "Codex CLI kullanım verisi vermedi.",
         "stat.credit": "KREDİ",
         "stat.sessionCost": "BU OTURUM MALİYETİ",
         "stat.sessionTokens": "BU OTURUM TOKENLERİ",
@@ -126,9 +135,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "empty.costHistory": "Bu sağlayıcı için yerel maliyet geçmişi henüz bulunmuyor.",
         "empty.providers": "Gösterilecek sağlayıcı verisi yok.",
         "footer.updated": "Son güncelleme {time} · {sources}",
-        "footer.cachedLoading": "Son başarılı veri gösteriliyor · Canlı veri yenileniyor…",
-        "footer.cached": "Son başarılı veri gösteriliyor · {reason}",
+        "footer.cachedLoading": "Canlı kullanım verisi yenileniyor…",
+        "footer.cached": "Güncel kullanım bilinmiyor · {reason}",
         "footer.refreshFailed": "Yenileme başarısız",
+        "footer.refreshQueued": "Yenileme sıraya alındı…",
         "tray.open": "Orbit'i aç",
         "tray.refresh": "Yenile",
         "tray.quit": "Çıkış",
@@ -164,9 +174,16 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "usage.left": "left",
         "usage.reset": "Resets: {value}",
         "usage.resetUnknown": "Reset time unknown",
+        "usage.unknown": "Current usage unknown",
         "email.show": "Show email",
         "email.hide": "Hide email",
         "account.fallback": "Connected account",
+        "resetCredits.line": "Reset credits: {count} · first expires {date}",
+        "resetCredits.plain": "Reset credits: {count}",
+        "compaction.label": "Compaction · last {days} days",
+        "compaction.detail": "{compacted}/{sessions} sessions · {events} events",
+        "compaction.tip": "Share of sessions compacted at least once in the last {days} days",
+        "error.codexDirect": "The Codex CLI returned no usage data.",
         "stat.credit": "CREDITS",
         "stat.sessionCost": "SESSION COST",
         "stat.sessionTokens": "SESSION TOKENS",
@@ -220,9 +237,10 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "empty.costHistory": "No local cost history for this provider yet.",
         "empty.providers": "No provider data to show.",
         "footer.updated": "Updated {time} · {sources}",
-        "footer.cachedLoading": "Showing last successful data · refreshing live data…",
-        "footer.cached": "Showing last successful data · {reason}",
+        "footer.cachedLoading": "Refreshing live usage data…",
+        "footer.cached": "Current usage unknown · {reason}",
         "footer.refreshFailed": "Refresh failed",
+        "footer.refreshQueued": "Refresh queued…",
         "tray.open": "Open Orbit",
         "tray.refresh": "Refresh",
         "tray.quit": "Quit",
@@ -283,6 +301,11 @@ ENGLISH_MONTHS = {
     "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12,
 }
 CACHED_PROVIDERS_KEY = "cached_providers"
+CACHED_COSTS_KEY = "cached_costs"
+# Asking upstream for `all` walks ~70 providers and takes over half a minute;
+# these are read by name on every refresh, the rest only once per launch.
+DEFAULT_PROVIDERS = ("claude", "codex")
+COMPACTION_DAYS = 7
 SCOPE_KEY = "scope"
 ALL_SCOPE = "all"
 # Days recorded before the provider-aware schema cannot be attributed afterwards;
@@ -338,21 +361,36 @@ PACE_PALETTE = {
 
 
 def cli_path() -> str:
-    """Locate the upstream CodexBar CLI without hard-coding an install path.
-
-    A versioned wrapper wins over the bare name: the JSON shape Orbit reads was
-    stable from 0.54 on. ``--cli`` overrides all of this; the search only picks
-    the default.
-    """
+    """Choose the newest compatible CodexBar CLI found in standard locations."""
     local_bin = Path.home() / ".local" / "bin"
+    candidates: list[str] = []
     for name in CLI_NAMES:
         candidate = local_bin / name
         if os.access(candidate, os.X_OK):
-            return str(candidate)
+            candidates.append(str(candidate))
         found = shutil.which(name)
-        if found:
-            return found
-    return CLI_NAMES[-1]
+        if found and found not in candidates:
+            candidates.append(found)
+    if not candidates:
+        return CLI_NAMES[-1]
+
+    compatible: list[tuple[tuple[int, int, int], str]] = []
+    for candidate in candidates:
+        try:
+            result = subprocess.run(
+                [candidate, "--version"], capture_output=True, text=True,
+                timeout=3, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        match = re.search(r"CodexBar\s+(\d+)\.(\d+)\.(\d+)", result.stdout + result.stderr)
+        if match:
+            version = tuple(int(part) for part in match.groups())
+            if version >= (0, 54, 0):
+                compatible.append((version, candidate))
+    if compatible:
+        return max(compatible)[1]
+    return candidates[0]
 
 
 def run_json(command: str, arguments: list[str]) -> tuple[object | None, str | None]:
@@ -381,8 +419,241 @@ def read_usage(command: str, fixture: str | None = None) -> tuple[list[dict], st
     return normalize_providers(payload)
 
 
+def codex_cli_path() -> str | None:
+    local = Path.home() / ".local" / "bin" / "codex"
+    return str(local) if os.access(local, os.X_OK) else shutil.which("codex")
+
+
+def epoch_to_iso(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def codex_reset_credits(raw: object) -> dict | None:
+    """Free limit resets are counted apart from the paid balance, which stays 0
+    on a plan that never bought credits."""
+    if not isinstance(raw, dict):
+        return None
+    items = raw.get("credits") if isinstance(raw.get("credits"), list) else []
+    available = [item for item in items if isinstance(item, dict) and item.get("status") == "available"]
+    count = raw.get("availableCount")
+    if isinstance(count, bool) or not isinstance(count, int):
+        count = len(available)
+    expiries = sorted(stamp for stamp in (epoch_to_iso(item.get("expiresAt")) for item in available) if stamp)
+    return {"available": count, "next_expiry": expiries[0] if expiries else None}
+
+
+def codex_entry_from_rpc(limits: object, account: object) -> dict | None:
+    """Shape an app-server answer like an upstream usage entry so one
+    normaliser serves both."""
+    limits = limits if isinstance(limits, dict) else {}
+    rate = limits.get("rateLimits") if isinstance(limits.get("rateLimits"), dict) else {}
+    account = account.get("account") if isinstance(account, dict) else None
+    account = account if isinstance(account, dict) else {}
+
+    def rpc_window(raw: object) -> dict | None:
+        if not isinstance(raw, dict) or raw.get("usedPercent") is None:
+            return None
+        return {"usedPercent": raw["usedPercent"], "resetsAt": epoch_to_iso(raw.get("resetsAt"))}
+
+    primary, secondary = rpc_window(rate.get("primary")), rpc_window(rate.get("secondary"))
+    email = account.get("email")
+    if not primary and not secondary and not email:
+        return None
+    entry: dict = {
+        "provider": "codex",
+        "source": "codex-cli",
+        "usage": {
+            "primary": primary, "secondary": secondary, "accountEmail": email,
+            "loginMethod": rate.get("planType") or account.get("planType"),
+        },
+    }
+    credits = rate.get("credits") if isinstance(rate.get("credits"), dict) else {}
+    try:
+        entry["credits"] = {"remaining": float(credits.get("balance")), "unit": "credits"}
+    except (TypeError, ValueError):
+        pass
+    reset_credits = codex_reset_credits(limits.get("rateLimitResetCredits"))
+    if reset_credits:
+        entry["resetCredits"] = reset_credits
+    return entry
+
+
+def read_codex_direct(timeout: float = 12.0) -> tuple[dict | None, str | None]:
+    """Ask the local Codex CLI itself. CodexBar 0.53 starts the app-server with
+    an approval flag Codex 0.159 removed, so its Codex read dies at launch; and
+    no CodexBar release reports the reset credits. Nothing here touches
+    credentials: the CLI answers from its own login."""
+    binary = codex_cli_path()
+    if not binary:
+        return None, t("error.codexDirect")
+    requests = [
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+         "params": {"clientInfo": {"name": "orbit", "title": APP_NAME, "version": "1.0.0"}}},
+        {"jsonrpc": "2.0", "method": "initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read"},
+        {"jsonrpc": "2.0", "id": 3, "method": "account/read", "params": {"refreshToken": False}},
+    ]
+    try:
+        process = subprocess.Popen(
+            [binary, "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True,
+        )
+    except OSError as exc:
+        return None, t("error.launch", detail=exc)
+    # The server never exits on its own; without this a silent one hangs the refresh.
+    killer = threading.Timer(timeout, process.kill)
+    killer.start()
+    answers: dict[int, object] = {}
+    try:
+        process.stdin.write("".join(json.dumps(request) + "\n" for request in requests))
+        process.stdin.flush()
+        for line in process.stdout:
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict) and message.get("id") in (2, 3):
+                answers[message["id"]] = message.get("result")
+                if len(answers) == 2:
+                    break
+    except OSError:
+        pass
+    finally:
+        killer.cancel()
+        process.kill()
+        process.__exit__(None, None, None)  # closes both pipes and reaps the child
+    entry = codex_entry_from_rpc(answers.get(2), answers.get(3))
+    return (entry, None) if entry else (None, t("error.codexDirect"))
+
+
+def entry_error(entries: list[dict]) -> str | None:
+    for entry in entries:
+        error = entry.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+    return None
+
+
+def read_provider_usage(command: str, provider_id: str) -> tuple[list[dict], str | None]:
+    arguments = ["usage", "--format", "json", "--json-only", "--provider", provider_id]
+    payload, error = None, None
+    if provider_id == "claude":
+        # Without browser cookies `auto` drives the Claude CLI (14.6s); OAuth answers in 0.4s.
+        payload, error = run_json(command, [*arguments, "--source", "oauth"])
+    if not (isinstance(payload, list) and any(isinstance(entry, dict) and isinstance(entry.get("usage"), dict) for entry in payload)):
+        payload, error = run_json(command, arguments)
+    entries =[entry for entry in payload if isinstance(entry, dict)] if isinstance(payload, list) else []
+    usable = [entry for entry in entries if isinstance(entry.get("usage"), dict)]
+    if provider_id == "codex":
+        direct, direct_error = read_codex_direct()
+        if direct and usable:
+            if direct.get("resetCredits"):
+                usable[0].setdefault("resetCredits", direct["resetCredits"])
+        elif direct:
+            usable = [direct]
+        else:
+            error = error or entry_error(entries) or direct_error
+    if not usable:
+        return [], error or entry_error(entries) or t("error.noUsableProviders")
+    return normalize_providers(usable)
+
+
+_compaction_cache: dict[str, tuple[float, int, list[float]]] = {}
+
+
+def compaction_sources() -> dict[str, tuple[Path, str, bytes]]:
+    """Where each client keeps its session transcripts, and the bytes that mark
+    a line worth parsing."""
+    home = Path.home()
+    return {
+        "claude": (home / ".claude" / "projects", "*/*.jsonl", b'"compact_boundary"'),
+        "codex": (home / ".codex" / "sessions", "**/*.jsonl", b'"compacted"'),
+    }
+
+
+def is_compaction_event(provider_id: str, record: dict) -> bool:
+    if provider_id == "claude":
+        return record.get("type") == "system" and record.get("subtype") == "compact_boundary"
+    return record.get("type") == "compacted"
+
+
+def compaction_times(path: Path, provider_id: str, marker: bytes) -> list[float]:
+    """Transcripts run to megabytes and a refresh comes every minute, so a file
+    is parsed again only after it changes."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return []
+    cached = _compaction_cache.get(str(path))
+    if cached and cached[:2] == (stat.st_mtime, stat.st_size):
+        return cached[2]
+    times: list[float] = []
+    try:
+        with path.open("rb") as handle:
+            for line in handle:
+                if marker not in line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict) or not is_compaction_event(provider_id, record):
+                    continue
+                try:
+                    times.append(datetime.fromisoformat(str(record.get("timestamp")).replace("Z", "+00:00")).timestamp())
+                except ValueError:
+                    times.append(stat.st_mtime)
+    except OSError:
+        return []
+    _compaction_cache[str(path)] = (stat.st_mtime, stat.st_size, times)
+    return times
+
+
+def compaction_stats(provider_id: str, now: datetime | None = None,
+                     sources: dict[str, tuple[Path, str, bytes]] | None = None) -> dict | None:
+    """Share of recently active sessions that were compacted at least once."""
+    source = (sources or compaction_sources()).get(provider_id)
+    if not source or not source[0].is_dir():
+        return None
+    root, pattern, marker = source
+    cutoff = ((now or datetime.now(timezone.utc)) - timedelta(days=COMPACTION_DAYS)).timestamp()
+    sessions = compacted = events = 0
+    for path in root.glob(pattern):
+        try:
+            if path.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        recent = [stamp for stamp in compaction_times(path, provider_id, marker) if stamp >= cutoff]
+        sessions += 1
+        compacted += bool(recent)
+        events += len(recent)
+    if not sessions:
+        return None
+    return {"sessions": sessions, "compacted": compacted, "events": events, "rate": 100 * compacted / sessions}
+
+
+def read_compaction(provider_ids: list[str]) -> dict[str, dict]:
+    stats = {provider_id: compaction_stats(provider_id) for provider_id in provider_ids}
+    return {provider_id: value for provider_id, value in stats.items() if value}
+
+
+def merge_providers(current: list[dict], fresh: list[dict]) -> list[dict]:
+    """A provider that failed this round keeps its card; only its numbers go stale."""
+    by_id = {provider["id"]: provider for provider in fresh}
+    merged = [by_id.pop(provider["id"], provider) for provider in current]
+    return merged + list(by_id.values())
+
+
 def read_cost(command: str, provider: str) -> tuple[dict, str | None]:
-    payload, error = run_json(command, ["cost", "--format", "json", "--json-only", "--provider", provider])
+    # CodexBar 0.53 segfaults while mirroring pi/OMP sessions, which Orbit never shows.
+    payload, error = run_json(command, ["cost", "--format", "json", "--json-only", "--provider", provider,
+                                        "--provider-native-only"])
     if error:
         return {}, error
     if isinstance(payload, list) and payload and isinstance(payload[0], dict):
@@ -394,12 +665,15 @@ def read_all_costs(command: str, provider_ids: list[str]) -> tuple[dict[str, dic
     """Combining totals needs every provider's cost, not just the selected one."""
     costs: dict[str, dict] = {}
     failures: list[str] = []
-    for provider_id in provider_ids:
-        cost, error = read_cost(command, provider_id)
-        if cost:
-            costs[provider_id] = cost
-        elif error:
-            failures.append(f"{provider_id}: {error}")
+    if not provider_ids:
+        return costs, None
+    with ThreadPoolExecutor(max_workers=min(len(provider_ids), 4)) as pool:
+        results = pool.map(lambda provider_id: read_cost(command, provider_id), provider_ids)
+        for provider_id, (cost, error) in zip(provider_ids, results):
+            if cost:
+                costs[provider_id] = cost
+            elif error:
+                failures.append(f"{provider_id}: {error}")
     return costs, "; ".join(failures) or None
 
 
@@ -478,6 +752,39 @@ def window(raw: object, label: str) -> dict | None:
         "used": used,
         "left": 100 - used,
     }
+
+
+def window_has_expired(data: dict, now: datetime | None = None) -> bool:
+    """An absolute reset in the past invalidates the reported percentage."""
+    raw = data.get("reset_raw")
+    if not isinstance(raw, str):
+        return False
+    try:
+        reset_at = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False  # Relative prose has no comparable timestamp.
+    if reset_at.tzinfo is None:
+        reset_at = reset_at.astimezone()
+    return reset_at <= (now or datetime.now(timezone.utc))
+
+
+def current_usage_providers(providers: list[dict], observed_at: datetime | None,
+                            now: datetime | None = None,
+                            observed_by_id: dict[str, datetime] | None = None) -> list[dict]:
+    """Keep identity visible while withholding unverified capacity numbers.
+    Providers answer at different speeds, so each can carry its own timestamp."""
+    current_time = now or datetime.now(timezone.utc)
+    shown = []
+    for provider in providers:
+        observed = observed_at if observed_by_id is None else observed_by_id.get(provider.get("id"))
+        fresh = observed is not None and timedelta(0) <= current_time - observed < timedelta(minutes=45)
+        windows = provider.get("windows", [])
+        valid = [item for item in windows if not window_has_expired(item, current_time)] if fresh else []
+        shown.append({**provider, "windows": valid,
+                      "credits": provider.get("credits") if fresh else None,
+                      "reset_credits": provider.get("reset_credits") if fresh else None,
+                      "has_unknown_windows": not fresh or len(valid) != len(windows) or not valid})
+    return shown
 
 
 def reset_text(data: dict) -> str:
@@ -611,6 +918,7 @@ def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
             "windows": windows,
             "credits": credits.get("remaining"),
             "credit_unit": credits.get("unit") or "credits",
+            "reset_credits": entry.get("resetCredits") if isinstance(entry.get("resetCredits"), dict) else None,
             # Upstream pace prose changes frequently; the UI derives its stable summary from windows.
             "pace": pace_window,
         })
@@ -631,6 +939,26 @@ def save_cached_providers(settings: QSettings, providers: list[dict]) -> None:
     settings.setValue(CACHED_PROVIDERS_KEY, json.dumps(providers, ensure_ascii=False))
 
 
+def load_cached_costs(settings: QSettings) -> dict[str, dict]:
+    """Read last-known provider costs so temporary CLI failures do not blank the dashboard."""
+    raw = settings.value(CACHED_COSTS_KEY, "")
+    try:
+        cached = json.loads(str(raw)) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(cached, dict):
+        return {}
+    return {
+        provider_id: cost
+        for provider_id, cost in cached.items()
+        if isinstance(provider_id, str) and isinstance(cost, dict)
+    }
+
+
+def save_cached_costs(settings: QSettings, costs: dict[str, dict]) -> None:
+    settings.setValue(CACHED_COSTS_KEY, json.dumps(costs, ensure_ascii=False))
+
+
 def legacy_settings_sources() -> list[QSettings]:
     """Every place a previous build may have stored preferences, newest first."""
     pairs = [
@@ -644,7 +972,7 @@ def legacy_settings_sources() -> list[QSettings]:
 
 def migrate_legacy_settings(settings: QSettings, legacy: QSettings) -> None:
     """Copy only user preferences that Orbit has not set yet."""
-    for key in (CACHED_PROVIDERS_KEY, "theme", "token_history_view", LANGUAGE_KEY):
+    for key in (CACHED_PROVIDERS_KEY, CACHED_COSTS_KEY, "theme", "token_history_view", LANGUAGE_KEY):
         if not settings.contains(key) and legacy.contains(key):
             settings.setValue(key, legacy.value(key))
 
@@ -1203,21 +1531,76 @@ class RefreshWorker(QObject):
     """Every CLI read blocks for seconds and there is one per provider, so doing
     them on the GUI thread freezes the window. This runs them off it."""
 
+    usage_ready = pyqtSignal(dict)
     done = pyqtSignal(dict)
 
-    def __init__(self, command: str, fixture: str | None, known_ids: list[str]):
+    def __init__(self, command: str, fixture: str | None, known_ids: list[str], discover: bool = False):
         super().__init__()
-        self.command, self.fixture, self.known_ids = command, fixture, known_ids
+        self.command, self.fixture, self.known_ids, self.discover = command, fixture, known_ids, discover
 
     def run(self):
-        providers, error = read_usage(self.command, self.fixture)
-        costs: dict[str, dict] = {}
-        cost_error = None
-        if not self.fixture:
-            ids = [provider["id"] for provider in providers] or self.known_ids
-            if ids:
-                costs, cost_error = read_all_costs(self.command, ids)
-        self.done.emit({"providers": providers, "error": error, "costs": costs, "cost_error": cost_error})
+        if self.fixture:
+            providers, error = read_usage(self.command, self.fixture)
+            self.usage_ready.emit({"providers": providers, "error": error})
+            self.done.emit({"providers": providers, "error": error, "costs": {}, "cost_error": None})
+            return
+        ids = list(dict.fromkeys([*self.known_ids, *DEFAULT_PROVIDERS]))
+        found: dict[str, dict] = {}
+        failures: list[str] = []
+        with ThreadPoolExecutor(max_workers=len(ids) + 2) as pool:
+            compaction_job = pool.submit(read_compaction, ids)
+            # The full scan is the slow one; it only runs to notice a provider
+            # this launch has not seen yet and never delays the known ones.
+            discovery = pool.submit(read_usage, self.command, None) if self.discover else None
+            jobs = {pool.submit(read_provider_usage, self.command, provider_id): provider_id for provider_id in ids}
+            compaction: dict[str, dict] = {}
+            # Each answer is shown as it lands instead of waiting for the slowest.
+            for job in as_completed([compaction_job, *jobs]):
+                if job is compaction_job:
+                    compaction = job.result()
+                    self.usage_ready.emit({"providers": [], "error": None, "partial": True, "compaction": compaction})
+                    continue
+                providers, error = job.result()
+                if providers:
+                    found.update({provider["id"]: provider for provider in providers})
+                    self.usage_ready.emit({"providers": providers, "error": None, "partial": True})
+                elif error:
+                    failures.append(f"{jobs[job]}: {error}")
+            costs, cost_error = read_all_costs(self.command, list(found) or self.known_ids)
+            providers = list(found.values())
+            error = None if providers else "; ".join(failures) or t("error.noUsableProviders")
+            self.done.emit({"providers": providers, "error": error, "costs": costs,
+                            "cost_error": cost_error, "compaction": compaction})
+            # The full scan takes ~35s; what it finds is added afterwards instead of
+            # holding back costs and the "updated" footer.
+            if discovery is not None:
+                new = [provider for provider in discovery.result()[0] if provider["id"] not in found]
+                if new:
+                    self.usage_ready.emit({"providers": new, "error": None, "partial": True})
+
+
+class CompactionRow(QFrame):
+    def __init__(self, stats: dict, color: str):
+        super().__init__()
+        self.setObjectName("usageWindow")
+        self.setToolTip(t("compaction.tip", days=COMPACTION_DAYS))
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        header = QHBoxLayout()
+        label = QLabel(t("compaction.label", days=COMPACTION_DAYS))
+        label.setObjectName("windowLabel")
+        percentage = QLabel(percent_text(stats["rate"]))
+        percentage.setObjectName("percentage")
+        percentage.setStyleSheet(f"color:{color};")
+        header.addWidget(label)
+        header.addStretch()
+        header.addWidget(percentage)
+        layout.addLayout(header)
+        detail = QLabel(t("compaction.detail", compacted=stats["compacted"],
+                          sessions=stats["sessions"], events=stats["events"]))
+        detail.setObjectName("reset")
+        layout.addWidget(detail)
 
 
 class StatTile(QFrame):
@@ -1316,7 +1699,12 @@ class Dashboard(QMainWindow):
         self.settings = QSettings(SETTINGS_ORGANIZATION, SETTINGS_APPLICATION)
         for legacy in legacy_settings_sources():
             migrate_legacy_settings(self.settings, legacy)
+        self.costs = {} if fixture else load_cached_costs(self.settings)
         self.providers = load_cached_providers(self.settings)
+        self.usage_observed_at: datetime | None = None
+        self.provider_observed: dict[str, datetime] = {}
+        self.compaction: dict[str, dict] = {}
+        self.discovered = False
         self.language = set_language(self.settings.value(LANGUAGE_KEY, DEFAULT_LANGUAGE))
         saved_theme = str(self.settings.value("theme", "light"))
         self.theme = saved_theme if saved_theme in {"light", "dark"} else "light"
@@ -1330,6 +1718,7 @@ class Dashboard(QMainWindow):
         self.setMinimumSize(430, 620)
         self.refresh_thread: QThread | None = None
         self.refresh_worker: RefreshWorker | None = None
+        self.refresh_pending = False
         self.apply_theme()
         self.build_ui()
         if self.providers:
@@ -1416,7 +1805,7 @@ class Dashboard(QMainWindow):
         self.refresh_button = QPushButton(t("btn.refresh"))
         self.refresh_button.setObjectName("refreshButton")
         self.refresh_button.setToolTip(t("tip.refresh"))
-        self.refresh_button.clicked.connect(self.refresh)
+        self.refresh_button.clicked.connect(self.request_refresh)
         header.addWidget(self.refresh_button)
         outer.addLayout(header)
 
@@ -1504,37 +1893,89 @@ class Dashboard(QMainWindow):
 
     # ---- data ----------------------------------------------------------
 
+    def request_refresh(self):
+        """A click during a slow CLI read requests one more fresh run."""
+        if self.refresh_thread is not None:
+            self.refresh_pending = True
+            self.set_footer("footer.refreshQueued")
+        else:
+            self.refresh()
+
     def refresh(self):
         """Kick off a background read. Scope clicks and repaints stay responsive
         because no CLI call runs on the GUI thread."""
+        if self.usage_observed_at is not None and datetime.now(timezone.utc) - self.usage_observed_at >= timedelta(minutes=45):
+            self.render_usage()
         if self.refresh_thread is not None:
             return
         thread = QThread(self)
-        worker = RefreshWorker(self.command, self.fixture, [provider["id"] for provider in self.providers])
+        worker = RefreshWorker(self.command, self.fixture, [provider["id"] for provider in self.providers],
+                               discover=not self.discovered)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
+        worker.usage_ready.connect(self.apply_usage)
         worker.done.connect(self.apply_refresh)
         worker.done.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(self.release_refresh_thread)
         self.refresh_thread, self.refresh_worker = thread, worker
-        self.refresh_button.setEnabled(False)
-        if not self.providers:
-            self.set_footer("footer.cachedLoading")
+        self.set_footer("footer.cachedLoading")
         thread.start()
+
+    def apply_usage(self, result: dict):
+        """Show fresh limits before slower cost requests finish."""
+        providers, error = result["providers"], result["error"]
+        if "compaction" in result:
+            self.compaction = result["compaction"] or {}
+        if providers:
+            now = datetime.now(timezone.utc)
+            if result.get("partial"):
+                self.providers = merge_providers(self.providers, providers)
+                self.provider_observed.update({provider["id"]: now for provider in providers})
+            else:
+                self.providers = providers
+                self.provider_observed = {provider["id"]: now for provider in providers}
+            self.usage_observed_at = now
+            save_cached_providers(self.settings, self.providers)
+            if self.scope != ALL_SCOPE and self.scope not in {provider["id"] for provider in providers}:
+                self.scope = ALL_SCOPE
+            self.build_scope_selector()
+            self.render_usage()
+            self.set_footer("footer.refreshQueued" if self.refresh_pending else "footer.cachedLoading")
+        elif error:
+            self.usage_observed_at = None
+            self.provider_observed = {}
+            self.render_usage()
+            if self.providers:
+                self.set_footer("footer.cached", None, reason=error)
+            else:
+                self.set_footer(None, error)
+        elif "compaction" in result:
+            self.render_usage()
 
     def release_refresh_thread(self):
         thread, self.refresh_thread, self.refresh_worker = self.refresh_thread, None, None
         if thread is not None:
             thread.deleteLater()
-        self.refresh_button.setEnabled(True)
+        if self.refresh_pending:
+            self.refresh_pending = False
+            self.refresh()
 
     def apply_refresh(self, result: dict):
         providers, error = result["providers"], result["error"]
+        self.discovered = True
+        if "compaction" in result:
+            self.compaction = result["compaction"] or {}
         # Geçici CLI hatasında son başarılı ekranı koru.
         if providers:
-            self.providers = providers
-            save_cached_providers(self.settings, providers)
+            now = datetime.now(timezone.utc)
+            self.providers = merge_providers(self.providers, providers)
+            self.provider_observed = {provider["id"]: now for provider in providers}
+            self.usage_observed_at = now
+            save_cached_providers(self.settings, self.providers)
+        else:
+            self.usage_observed_at = None
+            self.provider_observed = {}
         if not self.providers:
             self.build_scope_selector()
             self.clear_layout(self.usage_layout)
@@ -1543,8 +1984,13 @@ class Dashboard(QMainWindow):
             return
         cost_error = result["cost_error"]
         if not self.fixture:
-            self.costs = result["costs"]
-            self.update_token_history()
+            fresh_costs = result["costs"]
+            for provider_id, fresh in fresh_costs.items():
+                previous = self.costs.get(provider_id, {})
+                self.costs[provider_id] = {**previous, **fresh}
+            if fresh_costs:
+                save_cached_costs(self.settings, self.costs)
+                self.update_token_history(fresh_costs)
         if self.scope != ALL_SCOPE and self.scope not in {provider["id"] for provider in self.providers}:
             self.scope = ALL_SCOPE
         self.build_scope_selector()
@@ -1557,16 +2003,15 @@ class Dashboard(QMainWindow):
             self.set_footer("footer.cached", None, reason=error or t("footer.refreshFailed"))
 
     def show_cached_providers(self):
-        """Render cached usage immediately while the first live refresh runs."""
+        """Show cached identities and costs while live usage is unverified."""
         self.revealed_provider_id = None
-        self.costs = {}
         self.build_scope_selector()
         self.render_all()
         self.set_footer("footer.cachedLoading")
 
-    def update_token_history(self):
+    def update_token_history(self, costs: dict[str, dict] | None = None):
         changed = False
-        for provider_id, cost in self.costs.items():
+        for provider_id, cost in (costs if costs is not None else self.costs).items():
             incoming = extract_daily_tokens(cost)
             if incoming:
                 self.token_history = merge_token_history(self.token_history, incoming, provider_id)
@@ -1639,7 +2084,8 @@ class Dashboard(QMainWindow):
 
     def render_usage(self):
         self.clear_layout(self.usage_layout)
-        providers = self.scoped_providers()
+        providers = current_usage_providers(self.scoped_providers(), self.usage_observed_at,
+                                            observed_by_id=self.provider_observed)
         if not providers:
             empty = QLabel(t("empty.scope"))
             empty.setObjectName("empty")
@@ -1698,6 +2144,21 @@ class Dashboard(QMainWindow):
         layout.addLayout(head)
         for window_data in provider["windows"]:
             layout.addWidget(UsageWindow(window_data, colors.get(provider["id"], "#888888"), track))
+        if provider.get("has_unknown_windows"):
+            unknown = QLabel(t("usage.unknown"))
+            unknown.setObjectName("meta")
+            layout.addWidget(unknown)
+        reset_credits = provider.get("reset_credits")
+        if isinstance(reset_credits, dict) and reset_credits.get("available") is not None:
+            expiry = format_reset(reset_credits.get("next_expiry"))
+            text = (t("resetCredits.line", count=reset_credits["available"], date=expiry) if expiry
+                    else t("resetCredits.plain", count=reset_credits["available"]))
+            credit_line = QLabel(text)
+            credit_line.setObjectName("meta")
+            layout.addWidget(credit_line)
+        stats = self.compaction.get(provider["id"])
+        if stats:
+            layout.addWidget(CompactionRow(stats, colors.get(provider["id"], "#888888")))
         return card
 
     def make_pace_card(self, providers: list[dict]) -> QFrame:
@@ -1705,7 +2166,8 @@ class Dashboard(QMainWindow):
         The headline used to be repeated three times (chip, headline, detail
         sentence) while the numbers below said the same thing again."""
         rows = provider_pace_rows(providers)
-        pace_data = pace_summary(narrowest_window(providers))
+        pace_data = pace_summary([] if any(provider.get("has_unknown_windows") for provider in providers)
+                                 else narrowest_window(providers))
         pace = QFrame()
         pace.setObjectName("pace")
         # The whole card is themed by state, so green/amber/red is decided once
