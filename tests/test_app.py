@@ -145,13 +145,12 @@ class AppTests(unittest.TestCase):
 
     def test_theme_styles_are_available(self):
         light, dark = app.style_for_theme("light"), app.style_for_theme("dark")
-        self.assertIn("#eef2fa", light)
-        self.assertIn("#141926", dark)
+        self.assertIn("#f6f7f9", light)
+        self.assertIn("#111318", dark)
         self.assertEqual(app.style_for_theme("unknown"), app.style_for_theme("light"))
         for style in (light, dark):
-            # The glass surfaces only read as layers if the ground is a gradient
-            # and the cards above it stay translucent.
-            self.assertIn("qlineargradient", style)
+            # S5: one flat ground, cards separated by a hairline, no gradients.
+            self.assertNotIn("qlineargradient", style)
             self.assertIn("#heroCard", style)
             self.assertIn("QWidget { background:transparent;", style)
 
@@ -626,7 +625,7 @@ class AppTests(unittest.TestCase):
         worker.done.connect(received.append)
         worker.run()
         # A cached provider is asked again by name, alongside the defaults.
-        self.assertEqual(sorted(asked), ["claude", "codex", "stale"])
+        self.assertEqual(sorted(asked), ["antigravity", "claude", "codex", "stale"])
         self.assertEqual(calls, [("claude", "codex")])
         self.assertEqual(sorted(item["id"] for item in received[0]["providers"]), ["claude", "codex"])
         self.assertEqual(received[0]["costs"], {"codex": {"sessionTokens": 5}})
@@ -654,6 +653,31 @@ class AppTests(unittest.TestCase):
         self.assertEqual(received[0]["providers"], [{"id": "codex"}])
         self.assertEqual(late[0]["providers"], [{"id": "gemini"}])
         self.assertEqual(received[1]["providers"], [{"id": "codex"}])
+
+    def test_antigravity_is_not_asked_while_closed(self):
+        """A closed Antigravity cost ~15s per refresh before upstream gave up."""
+        calls = []
+        self._patch(app, "run_json", lambda command, arguments: calls.append(arguments) or (None, "x"))
+        self._patch(app, "antigravity_running", lambda: False)
+        self.assertEqual(app.read_provider_usage("codexbar", "antigravity"), ([], app.t("error.antigravityClosed")))
+        self.assertEqual(calls, [])
+
+    def test_antigravity_running_reads_process_names(self):
+        with tempfile.TemporaryDirectory() as root:
+            proc = Path(root)
+            (proc / "12").mkdir()
+            (proc / "12" / "comm").write_text("bash\n")
+            self.assertFalse(app.antigravity_running(proc))
+            (proc / "34").mkdir()
+            (proc / "34" / "comm").write_text("language_server\n")
+            self.assertTrue(app.antigravity_running(proc))
+
+    def test_costs_are_only_read_for_providers_upstream_supports(self):
+        calls = []
+        self._patch_live_reads({"codex": [{"id": "codex"}], "antigravity": [{"id": "antigravity"}]})
+        self._patch(app, "read_all_costs", lambda command, ids: calls.append(sorted(ids)) or ({}, None))
+        app.RefreshWorker("codexbar", None, []).run()
+        self.assertEqual(calls, [["codex"]])
 
     def test_claude_usage_prefers_oauth_and_falls_back_to_auto(self):
         """`auto` drives the Claude CLI on Linux and took 14.6s against 0.4s for OAuth."""

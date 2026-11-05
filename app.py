@@ -16,8 +16,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QSettings, QSharedMemory, QStandardPaths, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QFont, QIcon, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout, QLabel,
-    QMainWindow, QMenu, QPushButton, QScrollArea, QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout,
+    QApplication, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QMainWindow, QMenu, QPushButton, QScrollArea, QSizePolicy, QSystemTrayIcon, QTabWidget, QToolTip, QVBoxLayout,
     QWidget,
 )
 
@@ -71,23 +71,24 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "provider.generic": "Sağlayıcı",
         "usage.left": "kaldı",
         "usage.reset": "Sıfırlanma: {value}",
-        "usage.resetUnknown": "Reset zamanı bilinmiyor",
+        "usage.resetUnknown": "Sıfırlanma zamanı bilinmiyor",
         "usage.unknown": "Güncel kullanım bilinmiyor",
         "email.show": "E-postayı göster",
         "email.hide": "E-postayı gizle",
         "account.fallback": "Bağlı hesap",
-        "resetCredits.line": "Sıfırlama kredisi: {count} · en yakın bitiş {date}",
-        "resetCredits.plain": "Sıfırlama kredisi: {count}",
-        "compaction.label": "Compaction · son {days} gün",
-        "compaction.detail": "{compacted}/{sessions} oturum · {events} kez",
+        "resetCredits.label": "Sıfırlama kredisi",
+        "resetCredits.unit": "adet",
+        "resetCredits.expiry": "İlki {date} tarihinde bitiyor",
+        "compaction.line": "Sıkıştırma · son {days} gün {rate} · {compacted}/{sessions} oturum · {events} kez",
         "compaction.tip": "Son {days} günde en az bir kez sıkıştırılan oturumların payı",
         "error.codexDirect": "Codex CLI kullanım verisi vermedi.",
-        "stat.credit": "KREDİ",
-        "stat.sessionCost": "BU OTURUM MALİYETİ",
-        "stat.sessionTokens": "BU OTURUM TOKENLERİ",
-        "stat.cost31": "SON 31 GÜN MALİYETİ",
-        "stat.tokens31": "SON 31 GÜN TOKENLERİ",
-        "stat.last31": "SON 31 GÜN",
+        "stat.credit": "Kredi",
+        "stat.creditUnit": "kredi",
+        "stat.sessionCost": "Bu oturum maliyeti",
+        "stat.sessionTokens": "Bu oturum token",
+        "stat.cost31": "Son 31 gün maliyeti",
+        "stat.tokens31": "Son 31 gün token",
+        "stat.last31": "Son 31 gün",
         "pace.context": "ANLIK DURUM",
         "pace.contextNarrow": "ANLIK DURUM · EN DAR PENCERE",
         "pace.remaining": "KALAN KAPASİTE",
@@ -115,8 +116,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "plan.apiKey": "API anahtarı",
         "plan.claudeAi": "Claude hesabı",
         "plan.subscription": "Abonelik",
-        "combined.captionAll": "BİRLEŞİK TOKEN · {scope}",
-        "combined.captionOne": "TOPLAM TOKEN · {scope}",
+        "combined.captionAll": "Toplam token · {scope}",
+        "combined.captionOne": "Toplam token · yalnız {scope}",
         "combined.unit": "token",
         "combined.shareTitle": "Kayıtlı geçmiş toplamı",
         "combined.noHistory": "Kayıtlı token geçmişi yok; ilk yenilemeden sonra dolar.",
@@ -151,6 +152,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "error.noProviderList": "CLI çıktısında provider listesi bulunamadı.",
         "error.providerError": "Provider hatası",
         "error.noUsableProviders": "Kullanılabilir provider verisi bulunamadı.",
+        "error.antigravityClosed": "Antigravity kapalı.",
     },
     "en": {
         "app.subtitle": "AI usage and cost overview",
@@ -178,18 +180,19 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "email.show": "Show email",
         "email.hide": "Hide email",
         "account.fallback": "Connected account",
-        "resetCredits.line": "Reset credits: {count} · first expires {date}",
-        "resetCredits.plain": "Reset credits: {count}",
-        "compaction.label": "Compaction · last {days} days",
-        "compaction.detail": "{compacted}/{sessions} sessions · {events} events",
+        "resetCredits.label": "Reset credits",
+        "resetCredits.unit": "available",
+        "resetCredits.expiry": "First expires {date}",
+        "compaction.line": "Compaction · last {days} days {rate} · {compacted}/{sessions} sessions · {events} events",
         "compaction.tip": "Share of sessions compacted at least once in the last {days} days",
         "error.codexDirect": "The Codex CLI returned no usage data.",
-        "stat.credit": "CREDITS",
-        "stat.sessionCost": "SESSION COST",
-        "stat.sessionTokens": "SESSION TOKENS",
-        "stat.cost31": "COST · LAST 31 DAYS",
-        "stat.tokens31": "TOKENS · LAST 31 DAYS",
-        "stat.last31": "LAST 31 DAYS",
+        "stat.credit": "Credits",
+        "stat.creditUnit": "credits",
+        "stat.sessionCost": "Session cost",
+        "stat.sessionTokens": "Session tokens",
+        "stat.cost31": "Cost · last 31 days",
+        "stat.tokens31": "Tokens · last 31 days",
+        "stat.last31": "Last 31 days",
         "pace.context": "CURRENT STATE",
         "pace.contextNarrow": "CURRENT STATE · TIGHTEST WINDOW",
         "pace.remaining": "REMAINING",
@@ -217,8 +220,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "plan.apiKey": "API key",
         "plan.claudeAi": "Claude account",
         "plan.subscription": "Subscription",
-        "combined.captionAll": "COMBINED TOKENS · {scope}",
-        "combined.captionOne": "TOTAL TOKENS · {scope}",
+        "combined.captionAll": "Total tokens · {scope}",
+        "combined.captionOne": "Total tokens · {scope} only",
         "combined.unit": "tokens",
         "combined.shareTitle": "Recorded history total",
         "combined.noHistory": "No token history recorded yet; it fills after the first refresh.",
@@ -253,6 +256,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "error.noProviderList": "No provider list found in the CLI output.",
         "error.providerError": "Provider error",
         "error.noUsableProviders": "No usable provider data found.",
+        "error.antigravityClosed": "Antigravity is not running.",
     },
 }
 
@@ -304,7 +308,9 @@ CACHED_PROVIDERS_KEY = "cached_providers"
 CACHED_COSTS_KEY = "cached_costs"
 # Asking upstream for `all` walks ~70 providers and takes over half a minute;
 # these are read by name on every refresh, the rest only once per launch.
-DEFAULT_PROVIDERS = ("claude", "codex")
+DEFAULT_PROVIDERS = ("claude", "codex", "antigravity")
+# Upstream `cost` rejects every other provider.
+COST_PROVIDERS = ("claude", "codex")
 COMPACTION_DAYS = 7
 SCOPE_KEY = "scope"
 ALL_SCOPE = "all"
@@ -326,8 +332,8 @@ LOGIN_METHOD_KEYS = {
 }
 
 PROVIDER_PALETTE = {
-    "codex": {"dark": "#25c2c2", "light": "#009192"},
-    "claude": {"dark": "#e99169", "light": "#b85e31"},
+    "codex": {"dark": "#3cc7b8", "light": "#0e8a80"},
+    "claude": {"dark": "#f0935c", "light": "#c0612b"},
     UNKNOWN_PROVIDER: {"dark": "#7d8798", "light": "#98a2b3"},
 }
 EXTRA_PALETTE = (
@@ -539,7 +545,21 @@ def entry_error(entries: list[dict]) -> str | None:
     return None
 
 
+def antigravity_running(proc: Path = Path("/proc")) -> bool:
+    """Upstream reads Antigravity's Gemini quota from its language server and
+    spends ~15s failing when the app is closed, so it is only asked while one runs."""
+    for comm in proc.glob("[0-9]*/comm"):
+        try:
+            if comm.read_text().startswith("language_server"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
 def read_provider_usage(command: str, provider_id: str) -> tuple[list[dict], str | None]:
+    if provider_id == "antigravity" and not antigravity_running():
+        return [], t("error.antigravityClosed")
     arguments = ["usage", "--format", "json", "--json-only", "--provider", provider_id]
     payload, error = None, None
     if provider_id == "claude":
@@ -911,7 +931,7 @@ def normalize_providers(payload: object) -> tuple[list[dict], str | None]:
             "id": str(entry.get("provider") or entry.get("name") or "provider").lower(),
             "name": str(entry.get("name") or entry.get("provider") or "Provider").title(),
             "source": entry.get("source") or "local",
-            "email": email or t("account.fallback"),
+            "email": email or "",
             # Stored raw for the same reason the reset text is: the label is
             # language-dependent and the render pass decides how it reads.
             "plan": str(usage.get("loginMethod") or "connected"),
@@ -1293,15 +1313,35 @@ def breakdown_tooltip(title: str, entries: dict[str, int], colors: dict[str, str
     return "<br>".join(lines)
 
 
-def add_depth(widget: QWidget, theme: str, blur: int = 22, alpha: int = 0) -> QWidget:
-    """Cast one soft shadow so a translucent card reads as a layer above the
-    ground rather than a lighter patch of it."""
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setOffset(0, 5)
-    effect.setColor(QColor(0, 0, 0, alpha or (130 if theme == "dark" else 34)))
-    widget.setGraphicsEffect(effect)
-    return widget
+# Lucide outlines (24px grid); stroke colour is filled in per theme.
+ICON_PATHS = {
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
+    "moon": '<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>',
+    "eye": '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    "eyeOff": '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.53 13.53 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><path d="M2 2l20 20"/>',
+    "alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/>',
+    "check": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+}
+
+
+def icon_pixmap(name: str, color: str, size: int = 16) -> QPixmap:
+    """Rendered at 2x so the outline stays sharp on HiDPI screens."""
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{size * 2}" height="{size * 2}" viewBox="0 0 24 24" '
+           f'fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+           f'{ICON_PATHS[name]}</svg>')
+    pixmap = QPixmap()
+    pixmap.loadFromData(svg.encode(), "SVG")
+    pixmap.setDevicePixelRatio(2)
+    return pixmap
+
+
+def bar_color(state: str, theme: str) -> str:
+    """Bars stay neutral while there is room; only amber and red use colour."""
+    if state not in CALM_STATES:
+        return pace_color(state, theme)
+    neutral = QColor(theme_tokens(theme)["fg"])
+    neutral.setAlphaF(0.6)
+    return neutral.name(QColor.NameFormat.HexArgb)
 
 
 class ProgressTrack(QFrame):
@@ -1501,30 +1541,39 @@ class Sparkline(QWidget):
         super().leaveEvent(event)
 
 
-class UsageWindow(QFrame):
-    def __init__(self, data: dict, color: str, track: str):
+class LimitCell(QFrame):
+    """One column of a provider card: caption, large number, optional bar,
+    one muted detail line. Usage windows and reset credits share it."""
+    def __init__(self, label: str, value: str, suffix: str, detail: str,
+                 left: float | None = None, bar: str = "", track: str = "", accent: str | None = None):
         super().__init__()
-        self.setObjectName("usageWindow")
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(7)
-        header = QHBoxLayout()
-        label = QLabel(t(str(data["label"])))
-        label.setObjectName("windowLabel")
-        percentage = QLabel(percent_text(data["left"]))
-        percentage.setObjectName("percentage")
-        percentage.setStyleSheet(f"color:{color};")
-        suffix = QLabel(t("usage.left"))
-        suffix.setObjectName("percentageSuffix")
-        header.addWidget(label)
-        header.addStretch()
-        header.addWidget(percentage)
-        header.addWidget(suffix)
-        layout.addLayout(header)
-        layout.addWidget(ProgressTrack(data["left"], color, track))
-        reset = QLabel(t("usage.reset", value=reset_text(data)))
+        layout.setSpacing(4)
+        caption = QLabel(label)
+        caption.setObjectName("windowLabel")
+        layout.addWidget(caption)
+        value_row = QHBoxLayout()
+        value_row.setSpacing(6)
+        number = QLabel(value)
+        number.setObjectName("bigValue")
+        if accent:
+            number.setStyleSheet(f"color:{accent};")
+        unit = QLabel(suffix)
+        unit.setObjectName("percentageSuffix")
+        value_row.addWidget(number, 0, Qt.AlignmentFlag.AlignBaseline)
+        value_row.addWidget(unit, 0, Qt.AlignmentFlag.AlignBaseline)
+        value_row.addStretch()
+        layout.addLayout(value_row)
+        if left is not None:
+            layout.addSpacing(2)
+            layout.addWidget(ProgressTrack(left, bar, track))
+            layout.addSpacing(2)
+        reset = QLabel(detail)
         reset.setObjectName("reset")
+        reset.setWordWrap(True)
         layout.addWidget(reset)
+        layout.addStretch()
 
 
 class RefreshWorker(QObject):
@@ -1566,7 +1615,8 @@ class RefreshWorker(QObject):
                     self.usage_ready.emit({"providers": providers, "error": None, "partial": True})
                 elif error:
                     failures.append(f"{jobs[job]}: {error}")
-            costs, cost_error = read_all_costs(self.command, list(found) or self.known_ids)
+            cost_ids = [item for item in (list(found) or self.known_ids) if item in COST_PROVIDERS]
+            costs, cost_error = read_all_costs(self.command, cost_ids)
             providers = list(found.values())
             error = None if providers else "; ".join(failures) or t("error.noUsableProviders")
             self.done.emit({"providers": providers, "error": error, "costs": costs,
@@ -1579,37 +1629,15 @@ class RefreshWorker(QObject):
                     self.usage_ready.emit({"providers": new, "error": None, "partial": True})
 
 
-class CompactionRow(QFrame):
-    def __init__(self, stats: dict, color: str):
-        super().__init__()
-        self.setObjectName("usageWindow")
-        self.setToolTip(t("compaction.tip", days=COMPACTION_DAYS))
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(3)
-        header = QHBoxLayout()
-        label = QLabel(t("compaction.label", days=COMPACTION_DAYS))
-        label.setObjectName("windowLabel")
-        percentage = QLabel(percent_text(stats["rate"]))
-        percentage.setObjectName("percentage")
-        percentage.setStyleSheet(f"color:{color};")
-        header.addWidget(label)
-        header.addStretch()
-        header.addWidget(percentage)
-        layout.addLayout(header)
-        detail = QLabel(t("compaction.detail", compacted=stats["compacted"],
-                          sessions=stats["sessions"], events=stats["events"]))
-        detail.setObjectName("reset")
-        layout.addWidget(detail)
-
-
 class StatTile(QFrame):
-    def __init__(self, label: str, value: str, detail: str = "", theme: str = "light"):
+    def __init__(self, label: str, value: str, detail: str = ""):
         super().__init__()
         self.setObjectName("statTile")
+        # A taller window used to stretch the tiles; they keep their content height.
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 13, 14, 13)
-        layout.setSpacing(4)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(3)
         caption = QLabel(label)
         caption.setObjectName("statLabel")
         caption.setWordWrap(True)
@@ -1622,10 +1650,8 @@ class StatTile(QFrame):
         sub.setObjectName("statDetail")
         sub.setWordWrap(True)
         layout.addWidget(caption)
-        layout.addStretch(1)
         layout.addWidget(number)
         layout.addWidget(sub)
-        add_depth(self, theme, blur=16)
 
 
 class LegendRow(QFrame):
@@ -1747,7 +1773,7 @@ class Dashboard(QMainWindow):
         return {provider_id: provider_color(provider_id, self.theme, order) for provider_id in ids}
 
     def track_color(self) -> str:
-        return "#2b3341" if self.theme == "dark" else "#e6ebf3"
+        return theme_tokens(self.theme)["track"]
 
     def scoped_history(self) -> dict[str, dict[str, int]]:
         return {
@@ -1766,8 +1792,8 @@ class Dashboard(QMainWindow):
     def build_ui(self):
         root = QWidget()
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(20, 18, 20, 14)
-        outer.setSpacing(11)
+        outer.setContentsMargins(16, 16, 16, 12)
+        outer.setSpacing(12)
         header = QHBoxLayout()
         brand = QHBoxLayout()
         brand.setSpacing(11)
@@ -1824,10 +1850,16 @@ class Dashboard(QMainWindow):
         self.tabs.addTab(self.usage_page, t("tab.usage"))
         self.tabs.addTab(self.spend_page, t("tab.cost"))
         outer.addWidget(self.tabs, 1)
+        footer_row = QHBoxLayout()
+        footer_row.setSpacing(7)
+        self.live_dot = QLabel("●")
+        self.live_dot.setObjectName("liveDot")
         self.footer = QLabel()
         self.footer.setObjectName("footer")
         self.footer.setWordWrap(True)
-        outer.addWidget(self.footer)
+        footer_row.addWidget(self.live_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        footer_row.addWidget(self.footer, 1)
+        outer.addLayout(footer_row)
         self.setCentralWidget(root)
 
     def apply_theme(self):
@@ -1837,7 +1869,7 @@ class Dashboard(QMainWindow):
 
     def update_theme_button(self):
         is_dark = self.theme == "dark"
-        self.theme_button.setText("☀" if is_dark else "☾")
+        self.theme_button.setIcon(QIcon(icon_pixmap("sun" if is_dark else "moon", theme_tokens(self.theme)["fg"])))
         self.theme_button.setToolTip(t("tip.theme.light") if is_dark else t("tip.theme.dark"))
         self.theme_button.setAccessibleName(self.theme_button.toolTip())
 
@@ -1845,6 +1877,7 @@ class Dashboard(QMainWindow):
         self.theme = "dark" if self.theme == "light" else "light"
         self.settings.setValue("theme", self.theme)
         self.apply_theme()
+        self.build_scope_selector()  # provider colours are baked into each button's own stylesheet
         self.render_all()
 
     def toggle_language(self):
@@ -1868,7 +1901,7 @@ class Dashboard(QMainWindow):
         panel = QWidget()
         self.usage_layout = QVBoxLayout(panel)
         self.usage_layout.setContentsMargins(2, 8, 2, 6)
-        self.usage_layout.setSpacing(11)
+        self.usage_layout.setSpacing(12)
         scroll.setWidget(panel)
         return scroll
 
@@ -1878,7 +1911,7 @@ class Dashboard(QMainWindow):
         panel = QWidget()
         self.spend_layout = QVBoxLayout(panel)
         self.spend_layout.setContentsMargins(2, 10, 2, 6)
-        self.spend_layout.setSpacing(11)
+        self.spend_layout.setSpacing(12)
         scroll.setWidget(panel)
         return scroll
 
@@ -2052,6 +2085,8 @@ class Dashboard(QMainWindow):
         if suffix:
             text = f"{text} · {suffix}" if text else str(suffix)
         self.footer.setText(text)
+        # Green only when the line reports a successful live read.
+        self.live_dot.setVisible(key == "footer.updated")
 
     def render_all(self):
         self.render_usage()
@@ -2094,153 +2129,144 @@ class Dashboard(QMainWindow):
             return
         colors = self.colors()
         track = self.track_color()
+        self.usage_layout.addWidget(self.make_pace_card(providers))
         for provider in providers:
             self.usage_layout.addWidget(self.make_account_card(provider, colors, track))
-        self.usage_layout.addWidget(self.make_pace_card(providers))
         grid = QGridLayout()
-        grid.setSpacing(9)
+        grid.setSpacing(10)
         credits = [provider["credits"] for provider in providers if provider["credits"] is not None]
         credit_unit = next((provider["credit_unit"] for provider in providers if provider["credits"] is not None), "credits")
-        grid.addWidget(StatTile(t("stat.credit"), compact_number(sum(credits)) if credits else "—", credit_unit, theme=self.theme), 0, 0)
-        grid.addWidget(StatTile(t("stat.sessionCost"), money(self.scoped_cost_value("sessionCostUSD")), "USD", theme=self.theme), 0, 1)
-        grid.addWidget(StatTile(t("stat.sessionTokens"), token_count(self.scoped_cost_value("sessionTokens")), self.scope_caption(), theme=self.theme), 1, 0)
-        grid.addWidget(StatTile(t("stat.cost31"), money(self.scoped_cost_value("last30DaysCostUSD")), "USD", theme=self.theme), 1, 1)
+        if credit_unit == "credits":
+            credit_unit = t("stat.creditUnit")
+        grid.addWidget(StatTile(t("stat.sessionCost"), money(self.scoped_cost_value("sessionCostUSD")), "USD"), 0, 0)
+        grid.addWidget(StatTile(t("stat.cost31"), money(self.scoped_cost_value("last30DaysCostUSD")), "USD"), 0, 1)
+        grid.addWidget(StatTile(t("stat.sessionTokens"), token_count(self.scoped_cost_value("sessionTokens")), self.scope_caption()), 1, 0)
+        grid.addWidget(StatTile(t("stat.credit"), compact_number(sum(credits)) if credits else "—", credit_unit), 1, 1)
         self.usage_layout.addLayout(grid)
         self.usage_layout.addStretch()
 
     def make_account_card(self, provider: dict, colors: dict[str, str], track: str) -> QFrame:
+        """Name and plan, then the account line, then the limits side by side
+        in two columns; compaction and similar extras share one muted footer."""
         card = QFrame()
         card.setObjectName("identity")
-        add_depth(card, self.theme)
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 15)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(4)
         head = QHBoxLayout()
-        head.setSpacing(10)
+        head.setSpacing(8)
         dot = QLabel("●")
         dot.setObjectName("legendDot")
         dot.setStyleSheet(f"color:{colors.get(provider['id'], '#888888')};")
-        identity_column = QVBoxLayout()
-        identity_column.setSpacing(1)
         name = QLabel(provider["name"])
         name.setObjectName("providerName")
-        shown_email = provider["email"] if self.revealed_provider_id == provider["id"] else mask_email(provider["email"])
-        meta = QLabel(shown_email)
-        meta.setObjectName("meta")
-        identity_column.addWidget(name)
-        identity_column.addWidget(meta)
-        eye = QPushButton("👁")
-        eye.setObjectName("eyeButton")
-        eye.setFixedSize(28, 24)
-        eye.setToolTip(t("email.hide") if self.revealed_provider_id == provider["id"] else t("email.show"))
-        eye.clicked.connect(lambda _checked=False, value=provider["id"]: self.toggle_email(value))
         plan = QLabel(plan_label(provider["plan"]))
         plan.setObjectName("plan")
+        plan.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         head.addWidget(dot)
-        head.addLayout(identity_column)
-        head.addWidget(eye)
-        head.addStretch()
+        head.addWidget(name)
         head.addWidget(plan)
+        head.addStretch()
         layout.addLayout(head)
+
+        # The eye sits right after the address it reveals, not across the card.
+        account = QHBoxLayout()
+        account.setSpacing(4)
+        revealed = self.revealed_provider_id == provider["id"]
+        email = provider["email"] or t("account.fallback")
+        meta = QLabel(email if revealed else mask_email(email))
+        meta.setObjectName("meta")
+        account.addWidget(meta)
+        if "@" in email:
+            eye = QPushButton()
+            eye.setObjectName("eyeButton")
+            eye.setFixedSize(28, 28)
+            eye.setIcon(QIcon(icon_pixmap("eyeOff" if revealed else "eye", theme_tokens(self.theme)["muted"])))
+            eye.setToolTip(t("email.hide") if revealed else t("email.show"))
+            eye.setAccessibleName(eye.toolTip())
+            eye.setCursor(Qt.CursorShape.PointingHandCursor)
+            eye.clicked.connect(lambda _checked=False, value=provider["id"]: self.toggle_email(value))
+            account.addWidget(eye)
+        account.addStretch()
+        layout.addLayout(account)
+        layout.addSpacing(8)
+
+        cells = []
         for window_data in provider["windows"]:
-            layout.addWidget(UsageWindow(window_data, colors.get(provider["id"], "#888888"), track))
-        if provider.get("has_unknown_windows"):
-            unknown = QLabel(t("usage.unknown"))
-            unknown.setObjectName("meta")
-            layout.addWidget(unknown)
+            state = pace_state(clamp_percent(window_data.get("used")), window_data["left"])
+            cells.append(LimitCell(
+                t(str(window_data["label"])), percent_text(window_data["left"]), t("usage.left"),
+                t("usage.reset", value=reset_text(window_data)), window_data["left"],
+                bar_color(state, self.theme), track, None if state in CALM_STATES else pace_color(state, self.theme)))
         reset_credits = provider.get("reset_credits")
         if isinstance(reset_credits, dict) and reset_credits.get("available") is not None:
             expiry = format_reset(reset_credits.get("next_expiry"))
-            text = (t("resetCredits.line", count=reset_credits["available"], date=expiry) if expiry
-                    else t("resetCredits.plain", count=reset_credits["available"]))
-            credit_line = QLabel(text)
-            credit_line.setObjectName("meta")
-            layout.addWidget(credit_line)
+            cells.append(LimitCell(t("resetCredits.label"), str(reset_credits["available"]), t("resetCredits.unit"),
+                                   t("resetCredits.expiry", date=expiry) if expiry else ""))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(14)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        for index, cell in enumerate(cells):
+            grid.addWidget(cell, index // 2, index % 2)
+        layout.addLayout(grid)
+
+        foot_lines = []
+        if provider.get("has_unknown_windows"):
+            foot_lines.append(t("usage.unknown"))
         stats = self.compaction.get(provider["id"])
         if stats:
-            layout.addWidget(CompactionRow(stats, colors.get(provider["id"], "#888888")))
+            foot_lines.append(t("compaction.line", days=COMPACTION_DAYS, rate=percent_text(stats["rate"]),
+                                compacted=stats["compacted"], sessions=stats["sessions"], events=stats["events"]))
+        if foot_lines:
+            layout.addSpacing(8)
+            foot = QLabel("\n".join(foot_lines))
+            foot.setObjectName("cardFoot")
+            foot.setWordWrap(True)
+            if stats:
+                foot.setToolTip(t("compaction.tip", days=COMPACTION_DAYS))
+            layout.addWidget(foot)
+        else:
+            layout.addSpacing(4)
         return card
 
     def make_pace_card(self, providers: list[dict]) -> QFrame:
-        """Caption + state chip, one line per provider, one guidance sentence.
-        The headline used to be repeated three times (chip, headline, detail
-        sentence) while the numbers below said the same thing again."""
+        """One line above the cards: the state, the tightest provider window and
+        what to do about it. The per-provider bars it used to repeat already sit
+        in the cards below."""
         rows = provider_pace_rows(providers)
         pace_data = pace_summary([] if any(provider.get("has_unknown_windows") for provider in providers)
                                  else narrowest_window(providers))
+        state = pace_data["state"]
         pace = QFrame()
         pace.setObjectName("pace")
-        # The whole card is themed by state, so green/amber/red is decided once
-        # here and read back by the generated stylesheet.
-        pace.setProperty("paceState", pace_data["state"])
-        add_depth(pace, self.theme, blur=26)
-        pace_layout = QVBoxLayout(pace)
-        pace_layout.setContentsMargins(17, 15, 17, 15)
-        pace_layout.setSpacing(11)
-
-        header = QHBoxLayout()
-        caption = QLabel(t("pace.context"))
-        caption.setObjectName("paceContext")
-        status = QLabel(pace_data["headline"])
-        status.setObjectName("paceStatus")
-        header.addWidget(caption)
-        header.addStretch()
-        header.addWidget(status)
-        pace_layout.addLayout(header)
-
-        if rows:
-            pace_layout.addWidget(self.make_pace_body(rows))
+        # The stylesheet reads the state back, so the tint is decided once here.
+        pace.setProperty("paceState", state)
+        layout = QHBoxLayout(pace)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(10)
+        calm = state in CALM_STATES
+        icon = QLabel()
+        icon.setPixmap(icon_pixmap("check" if calm else "alert",
+                                   theme_tokens(self.theme)["muted"] if calm else pace_color(state, self.theme), 18))
+        icon.setFixedSize(18, 18)
+        layout.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+        if rows and not calm:
+            worst = rows[0]
+            lead = f"<b>{worst['name']} · {worst['label']}: {pace_data['headline'].lower()}</b>"
+            text = f"{lead} — {percent_text(worst['left'])} {t('usage.left')}, {t('usage.reset', value=worst['reset'])}. {pace_data['guidance']}"
+        elif rows:
+            text = f"<b>{pace_data['headline']}.</b> {pace_data['guidance']}"
         else:
-            detail = QLabel(pace_data["detail"])
-            detail.setWordWrap(True)
-            detail.setObjectName("paceText")
-            pace_layout.addWidget(detail)
-
-        guidance = QLabel(pace_data["guidance"])
-        guidance.setWordWrap(True)
-        guidance.setObjectName("paceGuidance")
-        pace_layout.addWidget(guidance)
-        # The method disclaimer never changes; a tooltip keeps it available
-        # without spending a permanent line on it.
+            text = f"<b>{pace_data['headline']}.</b> {pace_data['detail']}"
+        message = QLabel(text)
+        message.setObjectName("paceText")
+        message.setTextFormat(Qt.TextFormat.RichText)
+        message.setWordWrap(True)
+        layout.addWidget(message, 1)
         pace.setToolTip(pace_data["method"])
         return pace
-
-    def make_pace_body(self, rows: list[dict]) -> QFrame:
-        """One line per provider, tightest window first. narrowest_window()
-        collapses the combined scope to a single governing window, which showed
-        Codex alone and hid Claude entirely."""
-        body = QFrame()
-        body.setObjectName("paceMetrics")
-        layout = QVBoxLayout(body)
-        layout.setContentsMargins(13, 12, 13, 12)
-        layout.setSpacing(13)
-        track = self.track_color()
-        for row in rows:
-            # Provider brand colours already identify the cards above; here the
-            # colour has to answer "how much is left", so it follows the state.
-            color = pace_color(row["state"], self.theme)
-            entry = QVBoxLayout()
-            entry.setSpacing(5)
-            head = QHBoxLayout()
-            head.setSpacing(7)
-            name = QLabel(f"{row['name']} · {row['label']}")
-            name.setObjectName("windowLabel")
-            percentage = QLabel(percent_text(row["left"]))
-            percentage.setObjectName("percentage")
-            percentage.setStyleSheet(f"color:{color};")
-            suffix = QLabel(t("usage.left"))
-            suffix.setObjectName("percentageSuffix")
-            head.addWidget(name)
-            head.addStretch()
-            head.addWidget(percentage)
-            head.addWidget(suffix)
-            entry.addLayout(head)
-            entry.addWidget(ProgressTrack(row["left"], color, track))
-            reset = QLabel(t("usage.reset", value=row["reset"]))
-            reset.setObjectName("reset")
-            entry.addWidget(reset)
-            layout.addLayout(entry)
-        return body
 
     # ---- spend tab ------------------------------------------------------
 
@@ -2258,10 +2284,10 @@ class Dashboard(QMainWindow):
         self.spend_layout.addWidget(self.make_combined_card())
         grid = QGridLayout()
         grid.setSpacing(9)
-        grid.addWidget(StatTile(t("stat.cost31"), money(self.scoped_cost_value("last30DaysCostUSD")), "USD", theme=self.theme), 0, 0)
-        grid.addWidget(StatTile(t("stat.tokens31"), token_count(self.scoped_cost_value("last30DaysTokens")), theme=self.theme), 0, 1)
-        grid.addWidget(StatTile(t("stat.sessionCost"), money(self.scoped_cost_value("sessionCostUSD")), "USD", theme=self.theme), 1, 0)
-        grid.addWidget(StatTile(t("stat.sessionTokens"), token_count(self.scoped_cost_value("sessionTokens")), theme=self.theme), 1, 1)
+        grid.addWidget(StatTile(t("stat.cost31"), money(self.scoped_cost_value("last30DaysCostUSD")), "USD"), 0, 0)
+        grid.addWidget(StatTile(t("stat.tokens31"), token_count(self.scoped_cost_value("last30DaysTokens"))), 0, 1)
+        grid.addWidget(StatTile(t("stat.sessionCost"), money(self.scoped_cost_value("sessionCostUSD")), "USD"), 1, 0)
+        grid.addWidget(StatTile(t("stat.sessionTokens"), token_count(self.scoped_cost_value("sessionTokens"))), 1, 1)
         self.spend_layout.addLayout(grid)
         self.render_token_history()
         self.render_daily_costs()
@@ -2275,12 +2301,11 @@ class Dashboard(QMainWindow):
         total = sum(totals.values())
         card = QFrame()
         card.setObjectName("heroCard")
-        add_depth(card, self.theme, blur=28)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 17, 18, 17)
         layout.setSpacing(13)
-        caption = QLabel(t("combined.captionAll", scope=upper(self.scope_caption())) if self.scope == ALL_SCOPE
-                         else t("combined.captionOne", scope=upper(provider_label(self.scope))))
+        caption = QLabel(t("combined.captionAll", scope=self.scope_caption()) if self.scope == ALL_SCOPE
+                         else t("combined.captionOne", scope=provider_label(self.scope)))
         caption.setObjectName("cardCaption")
         layout.addWidget(caption)
         value_row = QHBoxLayout()
@@ -2289,20 +2314,9 @@ class Dashboard(QMainWindow):
         big.setObjectName("heroValue")
         unit = QLabel(t("combined.unit"))
         unit.setObjectName("heroUnit")
-        cost_column = QVBoxLayout()
-        cost_column.setSpacing(1)
-        cost_caption = QLabel(t("stat.last31"))
-        cost_caption.setObjectName("statLabel")
-        cost_value = QLabel(money(self.scoped_cost_value("last30DaysCostUSD")))
-        cost_value.setObjectName("heroCost")
-        cost_value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        cost_caption.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        cost_column.addWidget(cost_caption)
-        cost_column.addWidget(cost_value)
-        value_row.addWidget(big)
-        value_row.addWidget(unit)
+        value_row.addWidget(big, 0, Qt.AlignmentFlag.AlignBaseline)
+        value_row.addWidget(unit, 0, Qt.AlignmentFlag.AlignBaseline)
         value_row.addStretch()
-        value_row.addLayout(cost_column)
         layout.addLayout(value_row)
         if totals:
             layout.addWidget(ShareBar(totals, colors, t("combined.shareTitle")))
@@ -2318,7 +2332,6 @@ class Dashboard(QMainWindow):
     def render_token_history(self):
         history = QFrame()
         history.setObjectName("chart")
-        add_depth(history, self.theme)
         layout = QVBoxLayout(history)
         layout.setContentsMargins(17, 15, 17, 14)
         layout.setSpacing(10)
@@ -2370,14 +2383,13 @@ class Dashboard(QMainWindow):
             return
         chart = QFrame()
         chart.setObjectName("chart")
-        add_depth(chart, self.theme)
         chart_layout = QVBoxLayout(chart)
         chart_layout.setContentsMargins(17, 15, 17, 14)
         chart_layout.setSpacing(9)
         heading = QLabel(t("cost.dailyTitle", scope=self.scope_caption()))
         heading.setObjectName("historyTitle")
         chart_layout.addWidget(heading)
-        accent = "#8da0ff" if self.theme == "dark" else "#5b6ed6"
+        accent = theme_tokens(self.theme)["fg"]
         chart_layout.addWidget(Sparkline(sorted(series.items()), accent))
         self.spend_layout.addWidget(chart)
 
@@ -2391,7 +2403,6 @@ class Dashboard(QMainWindow):
         colors = self.colors()
         panel = QFrame()
         panel.setObjectName("chart")
-        add_depth(panel, self.theme)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(17, 15, 17, 14)
         layout.setSpacing(9)
@@ -2417,176 +2428,132 @@ class Dashboard(QMainWindow):
         self.spend_layout.addWidget(panel)
 
 
-# Depth comes from layered translucency, not from flat fills: a gradient ground,
-# hairline-lit card surfaces over it, and a soft cast shadow per card.
+# One flat ground, white or near-black cards with a hairline border and no
+# shadow: readability comes from spacing and type size, not from layers.
+THEME_TOKENS = {
+    "light": {"bg": "#f6f7f9", "fg": "#14171d", "muted": "#4f5867", "line": "#e0e3e9", "card": "#ffffff",
+              "segon": "#ffffff", "cta": "#1f2633", "cta_fg": "#ffffff", "cta_hover": "#353e4e",
+              "crit": "#b42318", "ok": "#1c7c47", "track": "#e8ebf0"},
+    "dark": {"bg": "#111318", "fg": "#eceef2", "muted": "#a5adba", "line": "#272b34", "card": "#181b21",
+             "segon": "#232832", "cta": "#e9ecf1", "cta_fg": "#111318", "cta_hover": "#ffffff",
+             "crit": "#ff7a6b", "ok": "#5fd08f", "track": "#2a2f38"},
+}
+
+
+def theme_tokens(theme: str) -> dict[str, str]:
+    return THEME_TOKENS["dark" if theme == "dark" else "light"]
+
+
 SHARED_STYLE = """
-QWidget { background:transparent; font-family:'Fira Sans', 'Noto Sans', sans-serif; }
+QWidget { background:transparent; font-family:'Fira Sans', 'Noto Sans', sans-serif; font-size:13.5px; }
 QLabel { background:transparent; }
 QScrollArea { border:0; background:transparent; }
 QTabWidget::pane { border:0; background:transparent; }
-QTabBar::tab { padding:8px 15px; margin-right:6px; border-radius:10px; font-weight:600; font-size:12.5px; }
-#title { font-size:25px; font-weight:700; letter-spacing:-.5px; }
-#subtitle { font-size:12px; }
-#footer { font-size:11px; padding:3px 2px; }
-#scopeButton { background:transparent; border:0; border-radius:9px; padding:7px 8px; font-size:12px; font-weight:600; }
-#sectionHint, #historyHint { font-size:11px; }
-#meta { font-size:11.5px; }
-#providerName { font-size:16px; font-weight:600; letter-spacing:-.2px; }
-#plan { font-size:10.5px; font-weight:600; border-radius:8px; padding:4px 10px; }
-#eyeButton { background:transparent; border:0; padding:0; font-size:13px; }
-#windowLabel { font-size:12.5px; font-weight:500; }
-#percentage { font-family:'Noto Sans Mono', monospace; font-size:12.5px; font-weight:600; }
-#percentageSuffix { font-size:11px; }
-#reset { font-size:11px; }
+QTabBar::tab { padding:7px 16px; margin-right:4px; border:1px solid transparent; border-radius:8px; font-weight:600; font-size:13px; }
+#title { font-size:22px; font-weight:700; letter-spacing:-.4px; }
+#subtitle { font-size:12.5px; }
+#footer { font-size:12px; padding:3px 0; }
+#liveDot { font-size:9px; }
+#scopeButton { background:transparent; border:0; border-radius:7px; padding:7px 8px; font-size:12.5px; font-weight:600; }
+#sectionHint, #historyHint { font-size:12px; }
+#meta { font-size:12.5px; }
+#providerName { font-size:15.5px; font-weight:700; }
+#plan { font-size:12px; font-weight:600; border-radius:9px; padding:2px 9px; }
+#eyeButton { border:0; padding:0; border-radius:7px; }
+#windowLabel, #percentageSuffix, #reset, #cardFoot { font-size:12.5px; }
+#bigValue { font-family:'Noto Sans Mono', monospace; font-size:24px; font-weight:500; letter-spacing:-.5px; }
+#cardFoot { padding-top:10px; }
 #legendDot { font-size:11px; }
 #legendName { font-size:12.5px; font-weight:500; }
 #legendValue { font-family:'Noto Sans Mono', monospace; font-size:12.5px; }
 #legendShare { font-family:'Noto Sans Mono', monospace; font-size:12px; }
-/* Small all-caps captions lose their Turkish diacritics below ~10px, so the
-   caption scale starts at 10.5px and leans on tracking instead of size. */
-#cardCaption, #statLabel, #paceContext { font-size:10.5px; font-weight:700; letter-spacing:.9px; }
-#heroValue { font-family:'Noto Sans Mono', monospace; font-size:38px; font-weight:700; letter-spacing:-1.4px; }
-#heroUnit { font-size:11px; }
-#heroCost { font-family:'Noto Sans Mono', monospace; font-size:17px; font-weight:600; }
-#paceStatus { border-radius:9px; padding:4px 10px; font-size:10.5px; font-weight:600; }
-#paceText, #paceGuidance { font-size:12px; }
-#statDetail { font-size:10.5px; }
-#statValue { font-family:'Noto Sans Mono', monospace; font-size:18px; font-weight:600; letter-spacing:-.4px; }
-#historyTitle { font-size:13px; font-weight:600; }
-#historyPicker { min-width:130px; font-size:11px; font-weight:600; }
+/* Sentence case, 12px and up: small all-caps captions lost the Turkish
+   diacritics and were the hardest text on the page to read. */
+#cardCaption, #statLabel { font-size:12.5px; font-weight:500; }
+#heroValue { font-family:'Noto Sans Mono', monospace; font-size:34px; font-weight:600; letter-spacing:-1px; }
+#heroUnit { font-size:12.5px; }
+#paceText { font-size:13.5px; }
+#statDetail { font-size:12px; }
+#statValue { font-family:'Noto Sans Mono', monospace; font-size:19px; font-weight:500; letter-spacing:-.3px; }
+#historyTitle { font-size:14px; font-weight:600; }
+#historyPicker { min-width:130px; font-size:12px; font-weight:600; }
 #tokenDayLabel { font-size:12px; }
 #tokenDayValue { font-family:'Noto Sans Mono', monospace; font-size:12px; font-weight:600; }
 #empty { padding:24px 8px; }
 #themeButton, #languageButton { min-width:20px; padding:7px 10px; }
-#themeButton { font-size:15px; }
-#languageButton { font-family:'Noto Sans Mono', monospace; font-size:11.5px; font-weight:700; letter-spacing:.6px; }
+#languageButton { font-family:'Noto Sans Mono', monospace; font-size:12px; font-weight:700; letter-spacing:.6px; }
 QComboBox::drop-down { border:0; width:24px; }
 QScrollBar:vertical { background:transparent; width:9px; margin:2px 0; }
 QScrollBar::handle:vertical { border-radius:4px; min-height:30px; }
-/* Unstyled arrow buttons and the scroll-area corner render as bright squares
-   over a translucent ground, so they are removed rather than recoloured. */
+/* Unstyled arrow buttons and the scroll-area corner render as bright squares,
+   so they are removed rather than recoloured. */
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; width:0; background:transparent; border:0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background:transparent; }
 QAbstractScrollArea::corner { background:transparent; border:0; }
-QToolTip { border-radius:10px; padding:8px 11px; font-size:12px; }
+QToolTip { border-radius:8px; padding:8px 11px; font-size:12.5px; }
 """
 
 
-LIGHT_STYLE = SHARED_STYLE + """
-QMainWindow { background:qlineargradient(x1:0, y1:0, x2:0.4, y2:1,
-    stop:0 #eef2fa, stop:0.55 #f4f6fc, stop:1 #eceff8); }
-QWidget { color:#172236; }
-#title { color:#142033; }
-#subtitle, #meta, #reset, #statLabel, #statDetail, #cardCaption, #sectionHint,
-#historyHint, #percentageSuffix, #heroUnit, #legendShare { color:#69768c; }
-#footer { color:#8793a5; }
-#selector { background:rgba(20, 32, 51, 0.05); border:1px solid rgba(20, 32, 51, 0.05); border-radius:12px; }
-#scopeButton { color:#69768c; }
-#scopeButton:hover { background:rgba(255, 255, 255, 0.65); }
-#scopeButton:checked { background:#ffffff; color:#142033; }
-#identity, #chart, #statTile {
-    background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(255, 255, 255, 0.92), stop:1 rgba(255, 255, 255, 0.66));
-    border:1px solid rgba(20, 32, 51, 0.075); border-radius:17px; }
-#heroCard {
-    background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1,
-        stop:0 rgba(91, 110, 214, 0.16), stop:0.6 rgba(255, 255, 255, 0.86), stop:1 rgba(255, 255, 255, 0.7));
-    border:1px solid rgba(91, 110, 214, 0.22); border-radius:19px; }
-#heroValue, #heroCost, #statValue, #providerName, #historyTitle, #tokenDayValue, #legendName { color:#142033; }
-#plan { color:#5c6a80; background:rgba(20, 32, 51, 0.06); }
-#legendValue { color:#5c6a80; }
-#tokenDayRow { background:rgba(255, 255, 255, 0.6); border:1px solid rgba(20, 32, 51, 0.055); border-radius:10px; }
-#tokenDayLabel { color:#5c6a80; }
-#empty { color:#5c6a80; }
-QComboBox { background:rgba(255, 255, 255, 0.85); border:1px solid rgba(20, 32, 51, 0.1); border-radius:9px; padding:6px 10px; min-width:150px; color:#172236; }
-QComboBox QAbstractItemView { background:#ffffff; color:#172236; selection-background-color:#e4eaff; selection-color:#263b8f; border:1px solid rgba(20, 32, 51, 0.1); }
-QPushButton { background:rgba(255, 255, 255, 0.9); border:1px solid rgba(20, 32, 51, 0.1); border-radius:10px; padding:7px 12px; color:#27364d; font-size:13px; font-weight:600; }
-QPushButton:hover { background:#ffffff; border-color:rgba(20, 32, 51, 0.18); }
-#refreshButton { background:#5b6ed6; border-color:#5b6ed6; color:#ffffff; }
-#refreshButton:hover { background:#4d60c4; border-color:#4d60c4; }
-#eyeButton { color:#8793a5; }
-#eyeButton:hover { color:#263b8f; background:rgba(91, 110, 214, 0.1); border-radius:7px; }
-QTabBar::tab { background:transparent; color:#8793a5; }
-QTabBar::tab:hover { background:rgba(255, 255, 255, 0.6); color:#40506a; }
-QTabBar::tab:selected { background:#ffffff; color:#142033; }
-QScrollBar::handle:vertical { background:rgba(20, 32, 51, 0.18); }
-QScrollBar::handle:vertical:hover { background:rgba(20, 32, 51, 0.3); }
-QToolTip { background:#ffffff; color:#172236; border:1px solid rgba(20, 32, 51, 0.12); }
+def theme_style(c: dict[str, str]) -> str:
+    return SHARED_STYLE + f"""
+QMainWindow {{ background:{c['bg']}; }}
+QWidget {{ color:{c['fg']}; }}
+#subtitle, #meta, #reset, #statLabel, #statDetail, #cardCaption, #sectionHint, #historyHint,
+#percentageSuffix, #heroUnit, #legendShare, #legendValue, #footer, #windowLabel, #cardFoot,
+#tokenDayLabel, #empty {{ color:{c['muted']}; }}
+#liveDot {{ color:{c['ok']}; }}
+#selector {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:10px; }}
+#scopeButton {{ color:{c['muted']}; }}
+#scopeButton:hover {{ background:{c['track']}; }}
+#scopeButton:checked {{ background:{c['track']}; color:{c['fg']}; }}
+#identity, #chart, #statTile, #heroCard {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:12px; }}
+#cardFoot {{ border-top:1px solid {c['line']}; }}
+#plan {{ color:{c['muted']}; background:{c['track']}; }}
+#tokenDayRow {{ background:{c['bg']}; border:1px solid {c['line']}; border-radius:8px; }}
+QComboBox {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:8px; padding:6px 10px; min-width:150px; color:{c['fg']}; }}
+QComboBox QAbstractItemView {{ background:{c['card']}; color:{c['fg']}; selection-background-color:{c['track']}; selection-color:{c['fg']}; border:1px solid {c['line']}; }}
+QPushButton {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:8px; padding:7px 12px; color:{c['fg']}; font-size:13px; font-weight:600; }}
+QPushButton:hover {{ background:{c['track']}; }}
+#refreshButton {{ background:{c['cta']}; border-color:{c['cta']}; color:{c['cta_fg']}; }}
+#refreshButton:hover {{ background:{c['cta_hover']}; border-color:{c['cta_hover']}; }}
+#eyeButton {{ background:transparent; }}
+#eyeButton:hover {{ background:{c['track']}; }}
+QTabBar::tab {{ background:transparent; color:{c['muted']}; }}
+QTabBar::tab:hover {{ color:{c['fg']}; }}
+QTabBar::tab:selected {{ background:{c['segon']}; border-color:{c['line']}; color:{c['fg']}; }}
+QScrollBar::handle:vertical {{ background:{c['line']}; }}
+QScrollBar::handle:vertical:hover {{ background:{c['muted']}; }}
+QToolTip {{ background:{c['card']}; color:{c['fg']}; border:1px solid {c['line']}; }}
 """
 
 
-DARK_STYLE = SHARED_STYLE + """
-QMainWindow { background:qlineargradient(x1:0, y1:0, x2:0.4, y2:1,
-    stop:0 #141926, stop:0.55 #0d1119, stop:1 #0a0d13); }
-QWidget { color:#f3f5f8; }
-#title { color:#ffffff; }
-#subtitle, #meta, #reset, #statLabel, #statDetail, #cardCaption, #sectionHint,
-#historyHint, #percentageSuffix, #heroUnit, #legendShare { color:#8a95a8; }
-#footer { color:#78849a; }
-#selector { background:rgba(255, 255, 255, 0.04); border:1px solid rgba(255, 255, 255, 0.05); border-radius:12px; }
-#scopeButton { color:#8a95a8; }
-#scopeButton:hover { background:rgba(255, 255, 255, 0.06); }
-#scopeButton:checked { background:rgba(255, 255, 255, 0.11); color:#ffffff; }
-#identity, #chart, #statTile {
-    background:qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 rgba(255, 255, 255, 0.062), stop:1 rgba(255, 255, 255, 0.022));
-    border:1px solid rgba(255, 255, 255, 0.08); border-radius:17px; }
-#heroCard {
-    background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1,
-        stop:0 rgba(120, 145, 255, 0.2), stop:0.6 rgba(255, 255, 255, 0.05), stop:1 rgba(255, 255, 255, 0.02));
-    border:1px solid rgba(140, 164, 255, 0.24); border-radius:19px; }
-#heroValue, #heroCost, #statValue, #providerName, #historyTitle, #tokenDayValue, #legendName { color:#ffffff; }
-#plan { color:#aeb8c8; background:rgba(255, 255, 255, 0.07); }
-#legendValue { color:#aeb8c8; }
-#tokenDayRow { background:rgba(255, 255, 255, 0.035); border:1px solid rgba(255, 255, 255, 0.055); border-radius:10px; }
-#tokenDayLabel { color:#aeb8c8; }
-#empty { color:#aeb8c8; }
-QComboBox { background:rgba(255, 255, 255, 0.07); border:1px solid rgba(255, 255, 255, 0.1); border-radius:9px; padding:6px 10px; min-width:150px; color:#f3f5f8; }
-QComboBox QAbstractItemView { background:#161b23; color:#f3f5f8; selection-background-color:#2a3550; selection-color:#ffffff; border:1px solid rgba(255, 255, 255, 0.1); }
-QPushButton { background:rgba(255, 255, 255, 0.07); border:1px solid rgba(255, 255, 255, 0.1); border-radius:10px; padding:7px 12px; color:#e8ecf3; font-size:13px; font-weight:600; }
-QPushButton:hover { background:rgba(255, 255, 255, 0.12); border-color:rgba(255, 255, 255, 0.18); }
-#refreshButton { background:#5f6fe0; border-color:#6b7ae8; color:#ffffff; }
-#refreshButton:hover { background:#6f7dea; border-color:#8290f2; }
-#eyeButton { color:#8a95a8; }
-#eyeButton:hover { color:#c9d4ff; background:rgba(140, 164, 255, 0.14); border-radius:7px; }
-QTabBar::tab { background:transparent; color:#8a95a8; }
-QTabBar::tab:hover { background:rgba(255, 255, 255, 0.05); color:#d3dae6; }
-QTabBar::tab:selected { background:rgba(255, 255, 255, 0.11); color:#ffffff; }
-QScrollBar::handle:vertical { background:rgba(255, 255, 255, 0.16); }
-QScrollBar::handle:vertical:hover { background:rgba(255, 255, 255, 0.26); }
-QToolTip { background:#10141c; color:#f3f5f8; border:1px solid rgba(255, 255, 255, 0.14); }
-"""
+LIGHT_STYLE = theme_style(THEME_TOKENS["light"])
+DARK_STYLE = theme_style(THEME_TOKENS["dark"])
+
+# Colour only shows up when something needs attention: calm states keep the
+# alert line in plain card colours, the others get a faint tint of their band.
+CALM_STATES = {"high", "balanced", "unknown"}
 
 
 def pace_style(theme: str) -> str:
-    """The current-state card was painted green in the stylesheet, so it stayed
-    green at 2% left. Its palette is generated per state instead, and the card
-    picks a block through the paceState property it sets on itself."""
-    light = theme != "dark"
-    panel = "rgba(255, 255, 255, 0.72)" if light else "rgba(255, 255, 255, 0.045)"
+    """The alert line picks its block through the paceState property it sets
+    on itself, so green/amber/red is decided once in make_pace_card()."""
+    c = theme_tokens(theme)
     blocks = []
-    for state, tone in PACE_PALETTE["light" if light else "dark"].items():
-        tint = tone["tint"]
-        stops = (
-            f"stop:0 rgba({tint}, 0.13), stop:0.65 rgba(255, 255, 255, 0.88), stop:1 rgba(255, 255, 255, 0.72)"
-            if light else
-            f"stop:0 rgba({tint}, 0.17), stop:0.65 rgba(255, 255, 255, 0.045), stop:1 rgba(255, 255, 255, 0.02)"
-        )
+    for state, tone in PACE_PALETTE["dark" if theme == "dark" else "light"].items():
         scope = f'#pace[paceState="{state}"]'
-        blocks.append(
-            f"{scope} {{\n"
-            f"    background:qlineargradient(x1:0, y1:0, x2:0.6, y2:1, {stops});\n"
-            f"    border:1px solid rgba({tint}, {0.2 if light else 0.22}); border-radius:19px; }}\n"
-            f"{scope} #paceContext {{ color:{tone['muted']}; }}\n"
-            f"{scope} #paceStatus {{ background:rgba({tint}, {0.14 if light else 0.16}); color:{tone['chip']}; }}\n"
-            f"{scope} #paceText, {scope} #paceGuidance {{ color:{tone['body']}; }}\n"
-            f"{scope} #paceMetrics {{ background:{panel}; border:1px solid rgba({tint}, {0.16 if light else 0.18}); border-radius:12px; }}\n"
-        )
+        if state in CALM_STATES:
+            blocks.append(f"{scope} {{ background:{c['card']}; border:1px solid {c['line']}; border-radius:10px; }}\n")
+        else:
+            blocks.append(
+                f"{scope} {{ background:rgba({tone['tint']}, 0.09); border:1px solid rgba({tone['tint']}, 0.28); border-radius:10px; }}\n"
+                f"{scope} #paceText {{ color:{tone['heading']}; }}\n"
+            )
     return "".join(blocks)
 
 
 def style_for_theme(theme: str) -> str:
-    return (DARK_STYLE if theme == "dark" else LIGHT_STYLE) + pace_style(theme)
+    return theme_style(theme_tokens(theme)) + pace_style(theme)
 
 
 def acquire_single_instance() -> QSharedMemory | None:
