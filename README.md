@@ -42,14 +42,17 @@ python3 app.py --fixture tests/fixtures/usage.json
 | Usage | Cost |
 |---|---|
 | ![Usage view](docs/usage-light.png) | ![Cost view](docs/cost-light.png) |
-| Provider cards, remaining capacity per window, and the current-state card. | Combined tokens, spend tiles and the 12-month token history. |
+| One card per provider, session and weekly side by side; a warning line appears only when a window runs low. | Total tokens, spend tiles and the 12-month token history. |
 
-| Daily detail | Dark theme |
+| Daily detail | Daily cost and models |
 |---|---|
-| ![Daily token history](docs/history-light.png) | ![Cost view in dark theme](docs/cost-dark.png) |
-| Every recorded day, with the daily cost sparkline and model spend below. | Every view follows the theme; the choice is remembered. |
+| ![Daily token history](docs/history-light.png) | ![Daily cost and model spend](docs/detail-light.png) |
+| The last 31 days, stacked per provider, and every recorded day below. | The daily cost sparkline and the five models that cost the most. |
 
-![Daily cost and model spend](docs/detail-light.png)
+| Dark theme · usage | Dark theme · cost |
+|---|---|
+| ![Usage view in dark theme](docs/usage-dark.png) | ![Cost view in dark theme](docs/cost-dark.png) |
+| Every view follows the theme; the choice is remembered. | Provider colours are lifted for contrast on dark. |
 
 All screenshots use sample data, not a real account.
 
@@ -61,21 +64,28 @@ selection.
 
 ### Usage view
 
-- One card per connected provider, colour-coded, showing the account address and
-  the plan badge the CLI reports (Plus, Pro, connected account, API key).
-- The address is masked (`ut•••@example.com`) until you press the eye button.
-- One bar per usage window — session, weekly, whatever upstream exposes — with
-  the percentage left and the exact reset time, localised from the absolute
-  timestamp rather than the CLI's English phrasing.
-- **Current state** card: one line per provider, tightest window first, coloured
-  green above 50% left, amber from 50% down to 25%, red below that. The card
-  itself takes the colour of its worst provider, and a sentence below says what
-  to do about it. The method note is on the card's tooltip.
+- One card per connected provider with its account address and the plan badge
+  the CLI reports (Plus, Pro, connected account, API key).
+- The address is masked (`sa•••@example.com`) until you press the eye button
+  beside it.
+- Usage windows sit side by side — session and weekly, plus monthly where
+  upstream exposes it — each with a large percentage left, a bar and the exact
+  reset time, localised from the absolute timestamp rather than the CLI's
+  English phrasing.
+- **Colour only means trouble.** Healthy windows stay grey; a window turns
+  amber from 50% left down to 25% and red below that.
+- **State line** above the cards: a calm check mark while everything is fine;
+  otherwise it names the tightest provider and window, how much is left, when
+  it resets and what to do about it.
+- Session cost, 31-day cost, session tokens and credits in four tiles below.
+- **Antigravity** (Gemini quota) appears when the Antigravity desktop app is
+  running; Orbit only asks CodexBar for it while its language server is up, so a
+  closed Antigravity costs no refresh time.
 
 ### Cost view
 
-- **Combined tokens** hero: total tokens in the retained history, spend over the
-  last 31 days, and a share bar with a legend line per provider.
+- **Total tokens** hero: total tokens in the retained history and a share bar
+  with a legend line per provider.
 - Four tiles: cost and tokens over the last 31 days, cost and tokens for the
   current session.
 - **12-month token history** with a monthly/daily switch. Columns stack the
